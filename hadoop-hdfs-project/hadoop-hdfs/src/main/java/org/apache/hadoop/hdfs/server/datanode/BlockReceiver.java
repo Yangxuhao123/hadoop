@@ -464,8 +464,11 @@ class BlockReceiver implements Closeable {
       throw ioe;
     } else { // encounter an error while writing to mirror
       // continue to run even if can not write to mirror
+      // 如果数据管道中传输失败了，第一个datanode写入第二个datanode失败了，不影响，继续运行；
       // notify client of the error
+      // 通知hdfs客户这个异常的发生，而且会等待客户端感知到这个问题来关闭这个数据管道
       // and wait for the client to shut down the pipeline
+      // 设定mirrorError标志位为true
       mirrorError = true;
     }
   }
@@ -530,9 +533,18 @@ class BlockReceiver implements Closeable {
   /** 
    * Receives and processes a packet. It can contain many chunks.
    * returns the number of data bytes that the packet has.
+   *
+   * 接收和处理一个packet，一个packet可以包含多个chunk
+   * 最后这个方法他会返回这个packet所拥有的数据的字节
    */
   private int receivePacket() throws IOException {
     // read the next packet
+    // 这里都是基于IO流进行通信的
+    // 很有可能说通过这个输入流可以读取到连续的两个packet的数据，但是在这里，它会自动做一个区分
+    // 也就说在这里，他会自动区分哪个packet是哪部分的数据
+    // 在输入流里接收到数据的时候，肯定比如说你可以读取到一些特殊的字符，packet header
+
+    // 在这里说得很清楚了，他会通过packetReceiver这个组件，就是通过NIO输入流，仅仅是读取一个Packet数据出来
     packetReceiver.receiveNextPacket(in);
 
     PacketHeader header = packetReceiver.getHeader();
@@ -593,6 +605,7 @@ class BlockReceiver implements Closeable {
         long begin = Time.monotonicNow();
         // For testing. Normally no-op.
         DataNodeFaultInjector.get().stopSendingPacketDownstream(mirrorAddr);
+        //传输到第二个datanode上去  由第二个datanode传输到第三个datanode上去
         packetReceiver.mirrorPacketTo(mirrorOut);
         mirrorOut.flush();
         long now = Time.monotonicNow();
@@ -609,6 +622,7 @@ class BlockReceiver implements Closeable {
               + ", blockId=" + replicaInfo.getBlockId());
         }
       } catch (IOException e) {
+        // 做一下标志位 MirrorError为true
         handleMirrorOutError(e);
       }
     }
@@ -635,6 +649,11 @@ class BlockReceiver implements Closeable {
 
       if (checksumReceivedLen > 0 && shouldVerifyChecksum()) {
         try {
+          // checksum,hdfs客户端传输过来的时候，有一个chunk -> checksum (基于chunk的内容用crc算法算出来的)
+          // 现在chunk传输到了datandoe这边，datanode为了确保传输过程中chunk数据没有破损
+          // 就需要重新基于chunk的内容算一下checksum，跟hdfs客户端发送过来的checksum对比一下，看是否一致
+          // 正常情况下，chunk的内容都是一样的，肯定checksum是一样的
+          // 如果过程中，chunk的内容被修改了，那么checksum肯定是不一样的
           verifyChunks(dataBuf, checksumBuf);
         } catch (IOException ioe) {
           // checksum error detected locally. there is no reason to continue.
@@ -734,6 +753,8 @@ class BlockReceiver implements Closeable {
           
           // Write data to disk.
           long begin = Time.monotonicNow();
+          // databuf就是packetReceiver接收到的packet数据就放在databuf中
+          // 其实就是直接将packet数据全部输入本地磁盘中的blk_000000000000001文件里面去
           streams.writeDataToDisk(dataBuf.array(),
               startByteToDisk, numBytesToDisk);
           long duration = Time.monotonicNow() - begin;
@@ -776,6 +797,8 @@ class BlockReceiver implements Closeable {
               byte[] buf = FSOutputSummer.convertToByteStream(partialCrc,
                   checksumSize);
               crcBytes = copyLastChunkChecksum(buf, checksumSize, buf.length);
+              // 其实又写了一个packet数据对应的crc算法算出来的checksum
+              // 写入了本地磁盘的blk_0000000000000000001对应的校验和文件
               checksumOut.write(buf);
               if(LOG.isDebugEnabled()) {
                 LOG.debug("Writing out partial crc for data len " + len +
@@ -976,6 +999,11 @@ class BlockReceiver implements Closeable {
         responder.start(); // start thread to processes responses
       }
 
+      // 核心接收packet的逻辑
+      // 封装在这里有一个receivePacket()方法，这里面都是网络的输入输出流，做了一个封装
+      // 分布式系统核心，rpc，tcp，流式，接口。http
+      // 接收和处理一个packet，一个packet可以包含多个chunk
+      // 最后这个方法他会返回这个packet所拥有的数据的字节
       while (receivePacket() >= 0) { /* Receive until the last packet */ }
 
       // wait for all outstanding packet responses. And then
@@ -1381,9 +1409,10 @@ class BlockReceiver implements Closeable {
           long seqno = PipelineAck.UNKOWN_SEQNO;
           long ackRecvNanoTime = 0;
           try {
-            if (type != PacketResponderType.LAST_IN_PIPELINE && !mirrorError) {
+            if (type != PacketResponderType.LAST_IN_PIPELINE && !mirrorError) {2
               DataNodeFaultInjector.get().failPipeline(replicaInfo, mirrorAddr);
               // read an ack from downstream datanode
+              // 他会读取下游的那个packet的ack消息
               ack.readFields(downstreamIn);
               ackRecvNanoTime = System.nanoTime();
               if (LOG.isDebugEnabled()) {
@@ -1431,6 +1460,8 @@ class BlockReceiver implements Closeable {
                   datanode.metrics.addPacketAckRoundTripTimeNanos(ackTimeNanos);
                 }
               }
+              // 最后一个datanode如果收到的是空包
+              // 此时这个lastPacketInBlock标志位，其实就是true，表示的是当前处理的是一个空包
               lastPacketInBlock = pkt.lastPacketInBlock;
             }
           } catch (InterruptedException ine) {
@@ -1477,10 +1508,12 @@ class BlockReceiver implements Closeable {
 
           if (lastPacketInBlock) {
             // Finalize the block and close the block file
+            // 彻底结束掉接收这个block需要的各种IO资源、线程资源，关闭对磁盘文件的输出流。
             finalizeBlock(startTime);
           }
 
           Status myStatus = pkt != null ? pkt.ackStatus : Status.SUCCESS;
+          // 往上游发送一个ack消息
           sendAckUpstream(ack, expected, totalAckTimeNanos,
             (pkt != null ? pkt.offsetInBlock : 0),
             PipelineAck.combineHeader(datanode.getECN(), myStatus));

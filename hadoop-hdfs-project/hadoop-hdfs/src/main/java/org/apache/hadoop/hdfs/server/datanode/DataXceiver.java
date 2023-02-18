@@ -906,12 +906,19 @@ class DataXceiver extends Receiver implements Runnable {
       // receive the block and mirror to the next target
       if (blockReceiver != null) {
         String mirrorAddr = (mirrorSock == null) ? null : mirrorNode;
+        // 在这个方法里，一定是读到一个packet，就写入本地的block磁盘文件
+        // 还会将这个packet数据包传输到下游的datanode里去，完成block副本的复制
+        // 一定会把一个block所有的packet都会做一样的事情
+        // 到最后，读到了一个空的packet，传输完毕了
         blockReceiver.receiveBlock(mirrorOut, mirrorIn, replyOut, mirrorAddr,
             dataXceiverServer.getWriteThrottler(), targets, false);
 
         // send close-ack for transfer-RBW/Finalized 
         if (isTransfer) {
           LOG.trace("TRANSFER: send close-ack");
+          // 如果一个datanode判断读取完了一个block所有的packet之后
+          // hdfs客户端最后一定会发送一个空的packet过来，标志说这个block的packet都传输完毕了
+          // 此时blockReceiver.receiveBlock()方法一定会退出
           writeResponse(SUCCESS, null, replyOut);
         }
       }

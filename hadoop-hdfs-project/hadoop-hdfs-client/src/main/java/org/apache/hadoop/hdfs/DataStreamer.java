@@ -407,6 +407,7 @@ class DataStreamer extends Daemon {
     synchronized void markFirstNodeIfNotMarked() {
       // There should be no existing error and no ongoing restart.
       if (!isNodeMarked()) {
+        // 主要就是说做一个标记：badnodeIndex = 0，也就是说第一个datanode是故障了
         badNodeIndex = 0;
       }
     }
@@ -630,6 +631,7 @@ class DataStreamer extends Daemon {
           Arrays.toString(storageTypes),
           Arrays.toString(storageIDs));
     }
+    //nodes是数据管道里的数据对应存放在的datanodes
     response = new ResponseProcessor(nodes);
     response.start();
     stage = BlockConstructionStage.DATA_STREAMING;
@@ -642,6 +644,7 @@ class DataStreamer extends Daemon {
     closeResponder();
     closeStream();
     setPipeline(null, null, null);
+    // stage变成了PIPELINE_SETUP_CREATE，需要重新建立一个数据管道
     stage = BlockConstructionStage.PIPELINE_SETUP_CREATE;
   }
 
@@ -652,23 +655,47 @@ class DataStreamer extends Daemon {
   /*
    * streamer thread is the only thread that opens streams to datanode,
    * and closes them. Any error recovery is also done by this thread.
+   * 这个DataStreamer的线程，是唯一的一个负责跟datanode交互上传数据的一个线程
+   * 如果说这个线程被启动了之后，然后开始运行他的run方法。
    */
   @Override
   public void run() {
     TraceScope scope = null;
     while (!streamerClosed && dfsClient.clientRunning) {
       // if the Responder encountered an error, shutdown Responder
+      // 大概可以理解为：数据上传的过程中，如果出现了错误，此时会走这里
+      // 如果在发送packet给primary datanode的过程中失败了，报错了，记录几个标志位
+      // 进入下一轮循环到这里
       if (errorState.hasError()) {
+        // responderClosed = true;
+        // 这是一个volatile变量
+        // this.interrupt();
+        // 因为你的这个线程处于一个wait等待的状态，或者是sleep休眠的状态
+        // 所以你要打断一下这个线程的等待，休眠的状态，让他尽快结束
+        // response.join();
+        // 在这里直接阻塞住，务必等待PacketResponser线程必须先结束，才能往下走
         closeResponder();
       }
 
       DFSPacket one;
       try {
         // process datanode IO errors if any
+        // 如果数据上传的过程中，出现了错误，会从这里来进行错误的处理
+        // 关于hdfs文件上传的错误处理的机制，也是很重要的
+        // 处理datanode的故障
         boolean doSleep = processDatanodeOrExternalError();
 
+        //dataQueue是linkedlist数据结构，相当于就是一个队列。
         synchronized (dataQueue) {
           // wait for a packet to be sent.
+          // 大概时发现如果说dataQueue这个队列里的数据是空的
+          // 此时会进入一个等待，无限的while循环
+          // 他在这里每次会等待1秒钟，再来判断dataQueue中是否有数据
+
+          // 刚开始初始化一个DataStreamer启动这个线程之后
+          // dataQueue这个队列一定是空的
+          // 所以这个线程一定会在这里卡住，阻塞住，等待有人放数据到dataQueue队列里来
+          // 如果有数据，那么就取出来数据，发送给datanode
           while ((!shouldStop() && dataQueue.isEmpty()) || doSleep) {
             long timeout = 1000;
             if (stage == BlockConstructionStage.DATA_STREAMING) {
@@ -681,10 +708,14 @@ class DataStreamer extends Daemon {
             }
             doSleep = false;
           }
+          //在这里跳出了这个while循环
+          //说明他就从dataQueue这个队列里，获取到了一个packet
           if (shouldStop()) {
             continue;
           }
           // get packet to be sent.
+          // 入队的时候，addLast
+          // 出队的时候，getFirst,先进先出
           one = dataQueue.getFirst(); // regular data packet
           SpanContext[] parents = one.getTraceParents();
           if (parents != null && parents.length > 0) {
@@ -708,8 +739,11 @@ class DataStreamer extends Daemon {
         // get new block from namenode.
         LOG.debug("stage={}, {}", stage, this);
 
+        // 刚开始的时候，一定是走第一个if else的代码分支的，此时这个block正处于under construction状态
         if (stage == BlockConstructionStage.PIPELINE_SETUP_CREATE) {
           LOG.debug("Allocating new block: {}", this);
+          // nextBlockOutputStream()方法
+          // 其实就是负责在跟namenode去申请一个新的block
           setPipeline(nextBlockOutputStream());
           initDataStreaming();
         } else if (stage == BlockConstructionStage.PIPELINE_SETUP_APPEND) {
@@ -729,6 +763,8 @@ class DataStreamer extends Daemon {
 
         if (one.isLastPacketInBlock()) {
           // wait for all data packets have been successfully acked
+          // 如果发现是block里的最后一个packet，那么就会在这里陷入一个无限的等待，等待之前发送的packet
+          // block里面的packet全部被处理掉，都上传好
           waitForAllAcks();
           if(shouldStop()) {
             continue;
@@ -737,6 +773,10 @@ class DataStreamer extends Daemon {
         }
 
         // send the packet
+        // 怎样传输数据包的呢？
+        // 先从dataQueue取出一个packet
+        // 再往ackQueue加入一个packet
+        // 只有当ResponseProcessor察觉这个packet传输成功了，才会将这个packet给删了
         SpanContext spanContext = null;
         synchronized (dataQueue) {
           // move packet from dataQueue to ackQueue
@@ -757,8 +797,13 @@ class DataStreamer extends Daemon {
         LOG.debug("{} sending {}", this, one);
 
         // write out data to remote datanode
+        // 开始将数据写入到远程
         try (TraceScope ignored = dfsClient.getTracer().
             newScope("DataStreamer#writeTo", spanContext)) {
+          // 直接将一个packet中的127个chunk所组成得数据，通过网络的输出流
+          // 写入到第一个datanode上去
+          // 将packet写入第一个datanode上去的代码是在这里，如果在这里报错了
+          // 说明这个数据传输到第一个datanode是失败了
           sendPacket(one);
         } catch (IOException e) {
           // HDFS-3398 treat primary DN is down since client is unable to
@@ -767,6 +812,10 @@ class DataStreamer extends Daemon {
           // effect. Pipeline recovery can handle only one node error at a
           // time. If the primary node fails again during the recovery, it
           // will be taken out then.
+          // 如果无法将packet写入到第一个datanode，那么就将第一个datanode(primary datanode)认为是宕机
+          // 如果packetresponder已经记录了某个失败的的，或者是正在重启中的datanode，对他的调用是不受影响的
+          // 数据管道的恢复机制每次只能处理一个datanode的故障
+          // 如果在数据管道恢复的过程中，primary datanode再次失败，那么就将这个datanode从list中移除
           errorState.markFirstNodeIfNotMarked();
           throw e;
         }
@@ -820,6 +869,8 @@ class DataStreamer extends Daemon {
             LOG.warn("DataStreamer Exception", e);
           }
         }
+        // badNodeIndex标记的是数据管道里的哪个datanode故障了
+        // 这里标记的是 数据传输的过程中出现了问题
         lastException.set(e);
         assert !(e instanceof NullPointerException);
         errorState.setInternalError();
@@ -1134,6 +1185,8 @@ class DataStreamer extends Daemon {
         // process responses from datanodes.
         try {
           // read an ack from the pipeline
+          // 也就是说通过blockReplyStream就可以从就可以从你hdfs客户都安直接对接的第一个block获取输出流
+          // 可以通过这个流读取第一个datanode返回的响应消息
           ack.readFields(blockReplyStream);
           if (ack.getSeqno() != DFSPacket.HEART_BEAT_SEQNO) {
             Long begin = packetSendTime.get(ack.getSeqno());
@@ -1150,10 +1203,12 @@ class DataStreamer extends Daemon {
 
           LOG.debug("DFSClient {}", ack);
 
+          // 每个packet其实都是有一个自增的seq序号
           long seqno = ack.getSeqno();
           // processes response status from datanodes.
           ArrayList<DatanodeInfo> congestedNodesFromAck = new ArrayList<>();
           for (int i = ack.getNumOfReplies()-1; i >=0  && dfsClient.clientRunning; i--) {
+            // 这里可以获取得到每个datanode返回的一个结果
             final Status reply = PipelineAck.getStatusFromHeader(ack
                 .getHeaderFlag(i));
             if (PipelineAck.getECNFromHeader(ack.getHeaderFlag(i)) ==
@@ -1170,6 +1225,7 @@ class DataStreamer extends Daemon {
               throw new IOException(message);
             }
             // node error
+            // 在这里一定会感知到了node error
             if (reply != SUCCESS) {
               errorState.setBadNodeIndex(i); // mark bad datanode
               throw new IOException("Bad response " + reply +
@@ -1281,10 +1337,13 @@ class DataStreamer extends Daemon {
           " waiting for responder to exit. ");
       return true;
     }
+    // 直接针对primary datanode的socket以及IO流的资源全部释放
     closeStream();
 
     // move packets from ack queue to front of the data queue
     synchronized (dataQueue) {
+      // 将ackQueue中的packet都重新加回到dataQueue中获取
+      // 清空掉ackQueue
       dataQueue.addAll(0, ackQueue);
       ackQueue.clear();
       packetSendTime.clear();
@@ -1302,6 +1361,7 @@ class DataStreamer extends Daemon {
       return false;
     }
 
+    // 为了数据恢复，而建立数据管道
     setupPipelineForAppendOrRecovery();
 
     if (!streamerClosed && dfsClient.clientRunning) {
@@ -1331,6 +1391,8 @@ class DataStreamer extends Daemon {
         }
         endBlock();
       } else {
+        // 之前是关了对应的PacketResponder
+        // 使用了新的datanode pipeline，此时会重新分配一个新的PacketResponder线程
         initDataStreaming();
       }
     }
@@ -1407,6 +1469,9 @@ class DataStreamer extends Daemon {
     while (tried < 3) {
       LocatedBlock lb;
       //get a new datanode
+      // 通过rpc的接口调用，找到了namenode获取了一个新的datanode
+      // 在这里调用了namenode的方法之后，人家肯定是基于机架感知特性，给datanode列表中加入一个datanode
+      // 人家这里会传输过去failed列表，告诉namenode再次挑选datanode的时候，不要再使用哪个有故障的datanode了
       lb = dfsClient.namenode.getAdditionalDatanode(
           src, stat.getFileId(), block.getCurrentBlock(), nodes, storageIDs,
           exclude.toArray(new DatanodeInfo[exclude.size()]),
@@ -1415,6 +1480,7 @@ class DataStreamer extends Daemon {
       setPipeline(lb);
 
       //find the new datanode
+      // 找到namenode分配新的datanode是哪一个
       final int d;
       try {
         d = findNewDatanode(original);
@@ -1430,7 +1496,8 @@ class DataStreamer extends Daemon {
         // If HdfsClientConfigKeys.BlockWrite.ReplaceDatanodeOnFailure.
         // MIN_REPLICATION is set to 0 or less than zero, an exception will be
         // thrown if a replacement could not be found.
-
+        // 当所存活的节点 大于 规定的hdfs最小的副本存活数量
+        // 不会去寻找新的节点   只是将数据块传输到现存活的datanode
         if (dfsClient.dtpReplaceDatanodeOnFailureReplication > 0 && nodes.length
             >= dfsClient.dtpReplaceDatanodeOnFailureReplication) {
           DFSClient.LOG.warn(
@@ -1452,6 +1519,10 @@ class DataStreamer extends Daemon {
       final String[] targetStorageIDs = {storageIDs[d]};
 
       try {
+        // 如果一旦找namenode建立了一个新的datanode列表之后
+        // 他就会在这里通过transfer方法，建立好跟primary datanode的socket、IO流资源
+        // 发送一个block过去
+        // 完成一个数据管道的建立
         transfer(src, targets, targetStorageTypes, targetStorageIDs,
             lb.getBlockToken());
       } catch (IOException ioe) {
@@ -1544,6 +1615,7 @@ class DataStreamer extends Daemon {
         return;
       }
 
+      // 核心代码逻辑
       handleDatanodeReplacement();
 
       // get a new generation stamp and an access token
@@ -1552,6 +1624,7 @@ class DataStreamer extends Daemon {
       accessToken = lb.getBlockToken();
 
       // set up the pipeline again with the remaining nodes
+      // 重新建立一个管道连接  无论是两个datanode还是三个datanode
       success = createBlockOutputStream(nodes, storageTypes, storageIDs, newGS,
           isRecovery);
 
@@ -1561,6 +1634,7 @@ class DataStreamer extends Daemon {
     } // while
 
     if (success) {
+      // 如果建立管道成功了，就更新一下管道
       updatePipeline(newGS);
     }
   }
@@ -1640,9 +1714,16 @@ class DataStreamer extends Daemon {
 
   /** Add a datanode if replace-datanode policy is satisfied. */
   private void handleDatanodeReplacement() throws IOException {
+    // 如果replace-datanode策略是允许的话
+    // 他可以将之前故障的那个datanode给替换成一个新的良好的datanode
     if (dfsClient.dtpReplaceDatanodeOnFailure.satisfy(stat.getReplication(),
         nodes, isAppend, isHflushed)) {
       try {
+        // 核心代码逻辑
+        // 上面将故障的那个datanode
+        // 它可以在pipeline里面加入一个新的datanode，满足3个datanode的条件
+        // 他如果要执行这些代码，是要满足一些条件的，才能是找namenode来申请一个新的datanode加入管道中
+        // 重新建立管道的连接
         addDatanode2ExistingPipeline();
       } catch(IOException ioe) {
         if (!dfsClient.dtpReplaceDatanodeOnFailure.isBestEffort()) {
