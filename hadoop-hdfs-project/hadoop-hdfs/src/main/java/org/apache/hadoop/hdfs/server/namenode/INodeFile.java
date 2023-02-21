@@ -250,6 +250,10 @@ public class INodeFile extends INodeWithAdditionalFields
 
   private long header = 0L;
 
+  /*INodeFile中有一个关键性的东西，就是这个blocks
+   * BlockInfo[]数组，这个blocks，这个东西就是代表了说，我的这个文件分成了哪些block
+   * 一个1GB的大文件，/usr/warehosue/hive/access_2018_10_25.log
+   * 此时hdfs的namenode的内存的文件目录树中，就有一个节点就是这个access_2018_10_25.log这个文件*/
   private BlockInfo[] blocks;
 
   INodeFile(long id, byte[] name, PermissionStatus permissions, long mtime,

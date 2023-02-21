@@ -86,6 +86,10 @@ public class IPCLoggerChannel implements AsyncLogger {
    * Executes tasks submitted to it serially, on a single thread, in FIFO order
    * (generally used for write tasks that should not be reordered).
    */
+  /*每个AsyncLogger其实都有一个自己单线程的线程池
+   * 他在里面发送请求的时候，就可以基于这个单线程的线程池来异步执行请求任务
+   * 外面调用他的人，就饿可以获取对应的Future来监听
+   * 异步执行的结果*/
   private final ListeningExecutorService singleThreadExecutor;
   /**
    * Executes tasks submitted to it in parallel with each other and with those
@@ -224,7 +228,8 @@ public class IPCLoggerChannel implements AsyncLogger {
     proxy = createProxy();
     return proxy;
   }
-  
+
+  //定义了一堆rpc接口，就是说namenode调用journalnode的接口
   protected QJournalProtocol createProxy() throws IOException {
     final Configuration confCopy = new Configuration(conf);
     
@@ -398,6 +403,9 @@ public class IPCLoggerChannel implements AsyncLogger {
 
           long rpcSendTimeNanos = System.nanoTime();
           try {
+            //往journal node推送数据
+            //通过journalnode的rpc代理，实现了journalnode rpc接口协议的
+            //通过这个代理，调用journal()接口，传入进去对应的参数
             getProxy().journal(createReqInfo(),
                 segmentTxId, firstTxnId, numTxns, data);
           } catch (IOException e) {

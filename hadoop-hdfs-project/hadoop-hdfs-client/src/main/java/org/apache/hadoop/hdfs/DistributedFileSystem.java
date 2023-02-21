@@ -1482,6 +1482,7 @@ public class DistributedFileSystem extends FileSystem
     return new FileSystemLinkResolver<Boolean>() {
       @Override
       public Boolean doCall(final Path p) throws IOException {
+        //最终会走到这边 dfs就是DFSClient
         return dfs.mkdirs(getPathName(p), permission, createParent);
       }
 

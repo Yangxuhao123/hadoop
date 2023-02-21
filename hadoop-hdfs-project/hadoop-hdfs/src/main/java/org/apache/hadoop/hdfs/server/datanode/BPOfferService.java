@@ -301,6 +301,9 @@ class BPOfferService {
    * Informing the name node could take a long long time! Should we wait
    * till namenode is informed before responding with success to the
    * client? For now we don't.
+   * 在这里，这里其实是一个异步的过程，不会因为要通知namenode自己接收了一个block而等待很长时间
+   * 直接返回，然后就发送ack响应消息给上游的datanode，一直到通知那个hdfs客户端
+   *
    */
   void notifyNamenodeReceivedBlock(ExtendedBlock block, String delHint,
       String storageUuid, boolean isOnTransientStorage) {
@@ -318,6 +321,8 @@ class BPOfferService {
         false);
   }
 
+  // 一个namenode对应了一个BPServiceActor
+  // 所以这里会通知active namenode和standby namenode
   private void notifyNamenodeBlock(ExtendedBlock block, BlockStatus status,
       String delHint, String storageUuid, boolean isOnTransientStorage) {
     checkBlock(block);
@@ -681,6 +686,7 @@ class BPOfferService {
     writeLock();
     try {
       if (actor == bpServiceToActive) {
+        // 核心逻辑
         return processCommandFromActive(cmd, actor);
       } else {
         return processCommandFromStandby(cmd, actor);
@@ -721,8 +727,10 @@ class BPOfferService {
       cmd instanceof BlockIdCommand ? (BlockIdCommand)cmd: null;
 
     switch(cmd.getAction()) {
+      // 如果是复制block的话，是DATA_TRANSFER的行为
     case DatanodeProtocol.DNA_TRANSFER:
       // Send a copy of a block to another datanode
+      // 发送一个block副本给其他的指定的datanode
       dn.transferBlocks(bcmd.getBlockPoolId(), bcmd.getBlocks(),
           bcmd.getTargets(), bcmd.getTargetStorageTypes(),
           bcmd.getTargetStorageIDs());

@@ -438,7 +438,10 @@ public class Journal implements Closeable {
     // "catching up" with the rest. Hence we do not need to fsync.
     boolean isLagging = lastTxnId <= committedTxnId.get();
     boolean shouldFsync = !isLagging;
-    
+
+    //对于journal node来说，人家肯定是要落地到磁盘里去
+    //FileJournalManager，是要将edits log落地到磁盘的
+    //直接用的就是EditsLogFileOutputStream那个流
     curSegment.writeRaw(records, 0, records.length);
     curSegment.setReadyToFlush();
     StopWatch sw = new StopWatch();

@@ -71,6 +71,10 @@ public class INodeDirectory extends INodeWithAdditionalFields
 
   static final byte[] ROOT_NAME = DFSUtil.string2Bytes("");
 
+  /*为什么叫做文件目录树呢？
+   * 就是他在数据结构上而言是一个树形结构
+   * INodeFIleDirectory就是里面有一个List<INode>，children就是目录里面的东西
+   * childrten列表中，可以有文件，也可以有目录。*/
   private List<INode> children = null;
   
   /** constructor */

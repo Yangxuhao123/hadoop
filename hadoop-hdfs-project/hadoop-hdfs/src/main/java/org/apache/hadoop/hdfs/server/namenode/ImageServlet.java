@@ -74,6 +74,8 @@ import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
  * Standby NameNode uses to upload checkpoints in HA deployments.
  */
 @InterfaceAudience.Private
+//standby namenode发送fsimage文件来的时候，走的是put请求
+//所以在imageservlet的put方法中进行处理
 public class ImageServlet extends HttpServlet {
 
   public static final String PATH_SPEC = "/imagetransfer";
@@ -663,6 +665,7 @@ public class ImageServlet extends HttpServlet {
                   return null;
                 }
 
+                //通过这个输入流就可以从standby namenode上不断地读取fsimage文件的内容
                 InputStream stream = request.getInputStream();
                 try {
                   long start = monotonicNow();
@@ -670,6 +673,8 @@ public class ImageServlet extends HttpServlet {
                       .handleUploadImageRequest(request, txid,
                           nnImage.getStorage(), stream,
                           parsedParams.getFileSize(), getThrottler(conf));
+                  //namenode接收完文件之后，同时更新自己本地的fsimage文件
+                  //同时写一个md5检验文件
                   nnImage.saveDigestAndRenameCheckpointImage(nnf, txid,
                       downloadImageDigest);
                   // Metrics non-null only when used inside name node
@@ -679,6 +684,7 @@ public class ImageServlet extends HttpServlet {
                   }
                   // Now that we have a new checkpoint, we might be able to
                   // remove some old ones.
+                  //可以清理一些旧的fsimage文件
                   nnImage.purgeOldStorage(nnf);
                 } finally {
                   // remove the request once we've processed it, or it threw an error, so we

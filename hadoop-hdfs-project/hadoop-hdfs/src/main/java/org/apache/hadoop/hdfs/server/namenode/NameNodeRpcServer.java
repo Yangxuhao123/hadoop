@@ -1156,6 +1156,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
       throw new IOException("mkdirs: Pathname too long.  Limit " 
                             + MAX_PATH_LENGTH + " characters, " + MAX_PATH_DEPTH + " levels.");
     }
+    //这里的是关键
     return namesystem.mkdirs(src,
         new PermissionStatus(getRemoteUser().getShortUserName(),
             null, masked), createParent);
@@ -1674,6 +1675,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
         @Override
         public void run() {
           try {
+            // 核心代码逻辑
             namesystem.processIncrementalBlockReport(nodeReg, r);
           } catch (Exception ex) {
             // usually because the node is unregistered/dead.  next heartbeat

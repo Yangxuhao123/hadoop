@@ -133,6 +133,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Keeps information related to the blocks stored in the Hadoop cluster.
+ * 保存与存储在Hadoop集群中的块相关的信息。
  * For block state management, it tries to maintain the  safety
  * property of "# of live replicas == # of expected redundancy" under
  * any events such as decommission, namenode failover, datanode failure.
@@ -320,6 +321,7 @@ public class BlockManager implements BlockStatsMXBean {
   final BlocksMap blocksMap;
 
   /** Redundancy thread. */
+  // RedundancyMonitor,后台线程，专门监控有没有复制的block
   private final Daemon redundancyThread = new Daemon(new RedundancyMonitor());
   /**
    * Timestamp marking the end time of {@link #redundancyThread}'s full cycle.
@@ -1678,6 +1680,7 @@ public class BlockManager implements BlockStatsMXBean {
     providedStorageMap.removeDatanode(node);
     final Iterator<BlockInfo> it = node.getBlockIterator();
     while(it.hasNext()) {
+      // 核心代码逻辑
       removeStoredBlock(it.next(), node);
     }
     // Remove all pending DN messages referencing this DN.
@@ -1970,6 +1973,7 @@ public class BlockManager implements BlockStatsMXBean {
         }
       }
         // Choose the blocks to be reconstructed
+      // 从neededReconstruction里面，待复制的队伍队列中，里面存放了需要复制的block
       blocksToReconstruct = neededReconstruction
           .chooseLowRedundancyBlocks(blocksToProcess, reset);
     } finally {
@@ -1992,15 +1996,21 @@ public class BlockManager implements BlockStatsMXBean {
     List<BlockReconstructionWork> reconWork = new ArrayList<>();
 
     // Step 1: categorize at-risk blocks into replication and EC tasks
+    // 1) 遍历了所有需要复制的block
+    // 2) 选择一个复制这个block的source datanode  去复制到了其他完好的datanode  这里只选择了存放数据的源datanode
+    // 3) 封装了一个复制任务
     namesystem.writeLock();
     try {
       synchronized (neededReconstruction) {
         for (int priority = 0; priority < blocksToReconstruct
             .size(); priority++) {
           for (BlockInfo block : blocksToReconstruct.get(priority)) {
+            // 选择一个复制这个block的source datanode
+            // 作为source datanode来复制一个block副本给别的还完好的datanode
             BlockReconstructionWork rw = scheduleReconstruction(block,
                 priority);
             if (rw != null) {
+              // 封装了一个复制任务
               reconWork.add(rw);
             }
           }
@@ -2028,6 +2038,8 @@ public class BlockManager implements BlockStatsMXBean {
       // choose replication targets: NOT HOLDING THE GLOBAL LOCK
       final BlockPlacementPolicy placementPolicy =
           placementPolicies.getPolicy(rw.getBlock().getBlockType());
+      // 选择要复制block副本过去的目标datanode列表  这些datanode上是没有需要复制的副本的
+      // 复制完之后才有
       rw.chooseTargets(placementPolicy, storagePolicySuite, excludedNodes);
     }
 
@@ -2042,6 +2054,8 @@ public class BlockManager implements BlockStatsMXBean {
         }
 
         synchronized (neededReconstruction) {
+          // Add block to the datanode's task list
+          // 将一个个task加入到source datanode的队列中
           if (validateReconstructionWork(rw)) {
             scheduledWork++;
           }
@@ -3177,6 +3191,7 @@ public class BlockManager implements BlockStatsMXBean {
 
     // Add replica if appropriate. If the replica was previously corrupt
     // but now okay, it might need to be updated.
+    // 如果是finalized状态，就一定会将blcok加入ToAdd列表中
     if (reportedState == ReplicaState.FINALIZED
         && (storedBlock.findStorageInfo(storageInfo) == -1 ||
         corruptReplicas.isReplicaCorrupt(storedBlock, dn))) {
@@ -3472,6 +3487,8 @@ public class BlockManager implements BlockStatsMXBean {
     }
 
     // add block to the datanode
+    // 保存了这些block在那个datanode上面
+    // 存放的方式为：[datanode01,block01的上一个block，block01的下一个block，datanode02，block02的上一个block，block02的下一个block]
     AddBlockResult result = storageInfo.addBlock(storedBlock, reportedBlock);
 
     int curReplicaDelta;
@@ -3530,6 +3547,8 @@ public class BlockManager implements BlockStatsMXBean {
     }
 
     // handle low redundancy/extra redundancy
+    // 每次上报完block之后，就会处理low redundancy / extra redundancy
+    // low redundancy，就是说副本数量不足3；extra redundancy，就是说副本数量超过3
     short fileRedundancy = getExpectedRedundancyNum(storedBlock);
     if (!isNeededReconstruction(storedBlock, num, pendingNum)) {
       neededReconstruction.remove(storedBlock, numCurrentReplica,
@@ -4084,7 +4103,8 @@ public class BlockManager implements BlockStatsMXBean {
       // failure. If the block is still valid, check if replication is
       // necessary. In that case, put block on a possibly-will-
       // be-replicated list.
-      //
+      // 如果发现一个datanode，导致一个block副本数量变少了
+      // 在这里，就要把block放入到一个需要复制副本的列表中
       if (!storedBlock.isDeleted()) {
         bmSafeMode.decrementSafeBlockCount(storedBlock);
         updateNeededReconstructions(storedBlock, -1, 0);
@@ -4221,6 +4241,7 @@ public class BlockManager implements BlockStatsMXBean {
     }
     long numBlocksLogged = 0;
     for (BlockInfoToAdd b : toAdd) {
+      // 上传完毕的block就会走这个方法彻底标志已经可以使用了
       addStoredBlock(b.stored, b.reported, storageInfo, delHintNode,
           numBlocksLogged < maxNumBlocksToLog);
       numBlocksLogged++;
@@ -4292,10 +4313,12 @@ public class BlockManager implements BlockStatsMXBean {
         removeStoredBlock(storageInfo, rdbi.getBlock(), node);
         deleted++;
         break;
+        // 已经接收到了一个block
       case RECEIVED_BLOCK:
         addBlock(storageInfo, rdbi.getBlock(), rdbi.getDelHints());
         received++;
         break;
+        // 准备开始接收一个block
       case RECEIVING_BLOCK:
         receiving++;
         processAndHandleReportedBlock(storageInfo, rdbi.getBlock(),
@@ -4619,11 +4642,15 @@ public class BlockManager implements BlockStatsMXBean {
       NumberReplicas repl = countNodes(block);
       int pendingNum = pendingReconstruction.getNumReplicas(block);
       int curExpectedReplicas = getExpectedRedundancyNum(block);
+      // 判断一下，当前这个block还存在的datanode上的副本数量(可能只有2个副本)
+      // 还有期望的副本因子数量（期望3个副本）
+      // 判断一下当前的这个block数量是否不充足，是否需要复制
       if (!hasEnoughEffectiveReplicas(block, repl, pendingNum)) {
         neededReconstruction.update(block, repl.liveReplicas() + pendingNum,
             repl.readOnlyReplicas(), repl.outOfServiceReplicas(),
             curExpectedReplicas, curReplicasDelta, expectedReplicasDelta);
       } else {
+        // 如果不是上面那种要复制副本的情况，就把这个block从待复制的队列中移除
         int oldReplicas = repl.liveReplicas() + pendingNum - curReplicasDelta;
         int oldExpectedReplicas = curExpectedReplicas-expectedReplicasDelta;
         neededReconstruction.remove(block, oldReplicas, repl.readOnlyReplicas(),
@@ -4971,6 +4998,7 @@ public class BlockManager implements BlockStatsMXBean {
 
   /**
    * Periodically calls computeBlockRecoveryWork().
+   * 周期性地去检查有没有要复制的block
    */
   private class RedundancyMonitor implements Runnable {
 
@@ -4980,11 +5008,13 @@ public class BlockManager implements BlockStatsMXBean {
         try {
           // Process recovery work only when active NN is out of safe mode.
           if (isPopulatingReplQueues()) {
+            // 核心代码逻辑
             computeDatanodeWork();
             processPendingReconstructions();
             rescanPostponedMisreplicatedBlocks();
             lastRedundancyCycleTS.set(Time.monotonicNow());
           }
+          // 3秒钟
           TimeUnit.MILLISECONDS.sleep(redundancyRecheckIntervalMs);
         } catch (Throwable t) {
           if (!namesystem.isRunning()) {
@@ -5029,6 +5059,7 @@ public class BlockManager implements BlockStatsMXBean {
     final int nodesToProcess = (int) Math.ceil(numlive
         * this.blocksInvalidateWorkPct);
 
+    // 核心方法：给每个需要复制的block都创建一个复制任务
     int workFound = this.computeBlockReconstructionWork(blocksToProcess);
 
     // Update counters

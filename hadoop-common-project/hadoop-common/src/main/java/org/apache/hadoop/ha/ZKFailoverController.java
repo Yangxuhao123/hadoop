@@ -178,6 +178,7 @@ public abstract class ZKFailoverController {
         @Override
         public Integer run() {
           try {
+            // 核心方法
             return doRun(args);
           } catch (Exception t) {
             throw new RuntimeException(t);
@@ -258,6 +259,7 @@ public abstract class ZKFailoverController {
       rpcServer.stopAndJoin();
       
       elector.quitElection(true);
+      // 有一个线程，这个线程是有一个healthMonitor,监听namenode
       healthMonitor.shutdown();
       healthMonitor.join();
     }

@@ -38,6 +38,7 @@ class QuorumOutputStream extends EditLogOutputStream {
       long txId, int outputBufferCapacity,
       int writeTimeoutMs, int logVersion) throws IOException {
     super();
+    //不同的流，对应的双缓冲都是自己独立的，每个流在实例化的时候，都会实例化一个buffer
     this.buf = new EditsDoubleBuffer(outputBufferCapacity);
     this.loggers = loggers;
     this.segmentTxId = txId;
@@ -52,6 +53,8 @@ class QuorumOutputStream extends EditLogOutputStream {
 
   @Override
   public void writeRaw(byte[] bytes, int offset, int length) throws IOException {
+    //人家走的也是双缓冲机制
+    //先写入内存，然后再是flush
     buf.writeRaw(bytes, offset, length);
   }
 
@@ -101,15 +104,36 @@ class QuorumOutputStream extends EditLogOutputStream {
       // 2) because the calls to the underlying nodes are asynchronous, we
       //    need a defensive copy to avoid accidentally mutating the buffer
       //    before it is sent.
+      /*将双缓冲内存中的数据拷贝到一个新的字节数组中去
+      1) IPC代码，rpc调用，就是说他需要一次性将缓冲区的里的数据全部发送到journal node上去，通过rpc接口请求
+      没有办法每次就发送一个大的数组的一部分
+      2) 因为对journal node的调用是异步的，他需要一个防御性的拷贝，来避免在发送这段数据之前
+      导致这个buffer缓冲被人修改了
+
+      它的意思就是什么呢？需要一次性把所有的buffer里的数据都发送到journal node里去
+      然后因为他是异步发送，为了避免说在异步发送的时候，还没发送，buffer的数据被人给修改了
+      所以在这里他会将buffer里的数据先拷贝到一个新的字节数组里去
+      * */
       DataOutputBuffer bufToSend = new DataOutputBuffer(numReadyBytes);
       buf.flushTo(bufToSend);
+      //上面两行代码就是将buffer里的数据，先写入一个新的DataOutputBuffer 里取
       assert bufToSend.getLength() == numReadyBytes;
+      //这里就是将新的DataOutputBuffer里的数据放到了一个byte[] data数组里去
       byte[] data = bufToSend.getData();
       assert data.length == bufToSend.getLength();
 
+      //通过AsyncLoggerSet这个组件，发送edits log到大多数的journalnode上去
+      //这个过程是异步发送的
+      //这个AsyncLogger都是基于底层的一个单线程线程池异步发送网络请求，rpc调用
+      //QuorumCall里可以获取到每个AsyncLogger对应点的future
       QuorumCall<AsyncLogger, Void> qcall = loggers.sendEdits(
           segmentTxId, firstTxToFlush,
           numReadyTxns, data);
+      //在这里必须是等待edits log到大多数的journal node都成功以后，才可以往下执行
+      //在这里会阻塞住，等待    监听器是qcall是上面方法返回值
+      //通过这里，观察每个Future的结果，来实现quorum算法
+      //3个journal node，必须有（3/2）+1 = 2个推送成功了才可以
+      //5个journal node，必须有（5/2）+1 = 3个推送成功了才可以
       loggers.waitForWriteQuorum(qcall, writeTimeoutMs, "sendEdits");
       
       // Since we successfully wrote this batch, let the loggers know. Any future

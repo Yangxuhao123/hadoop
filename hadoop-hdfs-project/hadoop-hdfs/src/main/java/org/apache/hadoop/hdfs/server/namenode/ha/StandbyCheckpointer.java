@@ -224,6 +224,11 @@ public class StandbyCheckpointer {
       } else {
         imageType = NameNodeFile.IMAGE;
       }
+
+      /*核心代码
+       * FSImage.saveNameSpace()方法，将内存中的元数据保存到了磁盘文件上去
+       * fsimage_00000000000001729,跟上txid
+       * 标识了说，这个fsimage是已经合并了txid = 1729的所有edist log*/
       img.saveNamespace(namesystem, imageType, canceler);
       txid = img.getStorage().getMostRecentCheckpointTxId();
       assert txid == thisCheckpointTxId : "expected to save checkpoint at txid=" +
@@ -247,6 +252,7 @@ public class StandbyCheckpointer {
     // Do this in a separate thread to avoid blocking transition to active, but don't allow more
     // than the expected number of tasks to run or queue up
     // See HDFS-4816
+    // 用另外一个线程异步的将刚刚写好的fsimage文件传输到active namenode
     ExecutorService executor = new ThreadPoolExecutor(0, activeNNAddresses.size(), 100,
         TimeUnit.MILLISECONDS, new LinkedBlockingQueue<Runnable>(activeNNAddresses.size()),
         uploadThreadFactory);
@@ -274,6 +280,7 @@ public class StandbyCheckpointer {
               public TransferFsImage.TransferResult call()
                   throws IOException, InterruptedException {
                 CheckpointFaultInjector.getInstance().duringUploadInProgess();
+                // 核心方法
                 return TransferFsImage.uploadImageFromStorage(activeNNAddress,
                     conf, namesystem.getFSImage().getStorage(), imageType, txid,
                     canceler);
@@ -380,6 +387,7 @@ public class StandbyCheckpointer {
       img.getStorage().getMostRecentCheckpointTxId();
   }
 
+  //这是一个内部类
   private class CheckpointerThread extends Thread {
     private volatile boolean shouldRun = true;
     private volatile long preventCheckpointsUntil = 0;
@@ -400,6 +408,7 @@ public class StandbyCheckpointer {
           new PrivilegedAction<Object>() {
           @Override
           public Object run() {
+            //核心代码
             doWork();
             return null;
           }
@@ -424,6 +433,8 @@ public class StandbyCheckpointer {
       final long checkPeriod = 1000 * checkpointConf.getCheckPeriod();
       // Reset checkpoint time so that we don't always checkpoint
       // on startup.
+      // 进入循环
+      // 默认是60s，每隔60s就会去检查一次是否要执行检查点
       lastCheckpointTime = monotonicNow();
       while (shouldRun) {
         boolean needRollbackCheckpoint = namesystem.isNeedRollbackFsImage();
@@ -451,12 +462,17 @@ public class StandbyCheckpointer {
 
           if (needCheckpoint) {
             LOG.info("Triggering a rollback fsimage for rolling upgrade.");
+          //如果满足第一个条件，那么可以执行checkpoint操作
+          //uncheckedpoint（还没合并到fsimage的edits log的数量） >= 100万
+          //也就是说，fsimage文件如果落后于edits log已经100万条数据了，那么此时必须执行一次checkpoint操作
           } else if (uncheckpointed >= checkpointConf.getTxnCount()) {
             LOG.info("Triggering checkpoint because there have been {} txns " +
                 "since the last checkpoint, " +
                 "which exceeds the configured threshold {}",
                 uncheckpointed, checkpointConf.getTxnCount());
             needCheckpoint = true;
+          //secsSinceLast（当前时间到上一次checkpoint的间隔）>= 1小时（3600秒）
+          //如果距离上一次checkpoint操作都间隔了1个小时了，那么此时必须要执行一次checkpoint操作
           } else if (secsSinceLast >= checkpointConf.getPeriod()) {
             LOG.info("Triggering checkpoint because it has been {} seconds " +
                 "since the last checkpoint, which exceeds the configured " +
@@ -477,6 +493,7 @@ public class StandbyCheckpointer {
 
             // on all nodes, we build the checkpoint. However, we only ship the checkpoint if have a
             // rollback request, are the checkpointer, are outside the quiet period.
+            // 核心代码
             doCheckpoint();
 
             // reset needRollbackCheckpoint to false only when we finish a ckpt

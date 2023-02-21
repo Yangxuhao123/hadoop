@@ -221,6 +221,7 @@ public class FSImage implements Closeable {
    * @throws IOException
    * @return true if the image needs to be saved or false otherwise
    */
+  // 从目录中选择最新的fsimage，跟edits log进行合并
   boolean recoverTransitionRead(StartupOption startOpt, FSNamesystem target,
       MetaRecoveryContext recovery)
       throws IOException {
@@ -696,6 +697,7 @@ public class FSImage implements Closeable {
 
     Iterable<EditLogInputStream> editStreams = null;
 
+    //初始化
     initEditLog(startOpt);
 
     if (NameNodeLayoutVersion.supports(
@@ -706,7 +708,7 @@ public class FSImage implements Closeable {
       // In the meanwhile, for HA upgrade, we will still write editlog thus need
       // this toAtLeastTxId to be set to the max-seen txid
       // For rollback in rolling upgrade, we need to set the toAtLeastTxId to
-      // the txid right before the upgrade marker.  
+      // the txid right before the upgrade marker.
       long toAtLeastTxId = editLog.isOpenForWrite() ? inspector
           .getMaxSeenTxId() : 0;
       if (rollingRollback) {
@@ -737,6 +739,7 @@ public class FSImage implements Closeable {
     FSImageFile imageFile = null;
     for (int i = 0; i < imageFiles.size(); i++) {
       try {
+        //就回去加载FSImageFile,加载到内存里来
         imageFile = imageFiles.get(i);
         loadFSImageFile(target, recovery, imageFile, startOpt);
         break;
@@ -759,6 +762,7 @@ public class FSImage implements Closeable {
     
     if (!rollingRollback) {
       prog.beginPhase(Phase.LOADING_EDITS);
+      //这个loadEdits()方法，就会加载fsimage之后的edits log进来
       long txnsAdvanced = loadEdits(editStreams, target, Long.MAX_VALUE,
           startOpt, recovery);
       prog.endPhase(Phase.LOADING_EDITS);
@@ -856,6 +860,7 @@ public class FSImage implements Closeable {
       editLog.recoverUnclosedStreams();
     } else {
       // This NN is HA and we're not doing an upgrade.
+      /*如果是HA状态的话，应该是调用这个方法，这个方法会触发底层的JournalSet里的JournalManager的初始化*/
       editLog.initSharedJournalsForRead();
     }
   }
@@ -912,6 +917,10 @@ public class FSImage implements Closeable {
               (lastAppliedTxId + 1) + logSuppressed);
         }
         try {
+          //核心代码
+          //FSEditLogLoader这个组件，他依赖了底层的EditLogInputStream去拉取数据    这里是通过journalnode来拉去edits log的
+          //这里，基于Loader就完成了从Journal node加载edits log以及应用到内存文件目录树中去
+          //就完成了fsimage和edits log的合并
           remainingReadTxns -= loader.loadFSEdits(editIn, lastAppliedTxId + 1,
                   remainingReadTxns, startOpt, recovery);
         } finally {
@@ -1130,6 +1139,7 @@ public class FSImage implements Closeable {
         return false;
       }
     }
+    //核心代码
     saveNamespace(source, NameNodeFile.IMAGE, null);
     return true;
   }
@@ -1141,6 +1151,8 @@ public class FSImage implements Closeable {
   /**
    * Save the contents of the FS image to a new image file in each of the
    * current storage directories.
+   * 将内存中的数据组织成一定的格式，然后用二进制的方式写入到磁盘文件上去
+   * 一般人是无法打开文件直接阅读的，他应该是有自己的特殊的序列化方式
    */
   public synchronized void saveNamespace(FSNamesystem source, NameNodeFile nnf,
       Canceler canceler) throws IOException {
@@ -1160,12 +1172,15 @@ public class FSImage implements Closeable {
     }
     try {
       try {
+        // 将fsimage文件写入到磁盘上去
         saveFSImageInAllDirs(source, nnf, imageTxId, canceler);
         if (!source.isRollingUpgrade()) {
           updateStorageVersion();
         }
       } finally {
         if (editLogWasOpen) {
+          // 核心代码
+          // 然后将edits文件重新打开一个segment文件
           editLog.startLogSegmentAndWriteHeaderTxn(imageTxId + 1,
               source.getEffectiveLayoutVersion());
           // Take this opportunity to note the current transaction.
@@ -1248,12 +1263,14 @@ public class FSImage implements Closeable {
         ctx.checkCancelled(); // throws
         assert false : "should have thrown above!";
       }
-  
+
+      // 写fsimage的时候，可能是别的名字，写完之后，进行修改
       renameCheckpoint(txid, NameNodeFile.IMAGE_NEW, nnf, false);
   
       // Since we now have a new checkpoint, we can clean up some
       // old edit logs and checkpoints.
       // Do not purge anything if we just wrote a corrupted FsImage.
+      // 如果你写一个新的fsimage文件之后，你就可以清理之前的一些edits log文件和checkpoint文件
       if (!exitAfterSave.get()) {
         purgeOldStorage(nnf);
         archivalManager.purgeCheckpoints(NameNodeFile.IMAGE_NEW);

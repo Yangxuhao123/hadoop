@@ -765,17 +765,31 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   static FSNamesystem loadFromDisk(Configuration conf) throws IOException {
 
     checkConfiguration(conf);
+    //构造了一个FSImage，这是一个关键对象
+    //存放了磁盘上的fsimage文件里的数据，也就是代表了hdfs的元数据
     FSImage fsImage = new FSImage(conf,
+            //人家都显示清楚了，是从哪个路径加载fsimage，就是从namespace dir
+            //可以推测，如英国你不做任何配置的话，fsimage文件默认是从目录：/tmp/apps/hadoop-root/tmp/dfs/name，来加载
         FSNamesystem.getNamespaceDirs(conf),
+            //从哪里来加载edits 文件
+            //默认的配置下，edits日志文件是跟fsimage文件是放在一起的
+            //看了一些hadoop中的fsimage文件和edits文件，他们就是在一个目录中的
         FSNamesystem.getNamespaceEditsDirs(conf));
+    //这行代码很关键，实例化了一个FSNamesystem对象
+    //关键的点在于将FSimage对象放在了FSNamesystem里面
     FSNamesystem namesystem = new FSNamesystem(conf, fsImage, false);
     StartupOption startOpt = NameNode.getStartupOption(conf);
     if (startOpt == StartupOption.RECOVER) {
       namesystem.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
     }
 
+    //这块其实就是说通过FSNamesystem.loadFSImage()方法，从磁盘上加载fsimage和edits两个文件的数据
+    //然后再内存中合并两个文件的数据
+    //通过FSImage会持有一份在内存中的完整的元数据信息
     long loadStart = monotonicNow();
     try {
+      //核心代码
+      //从磁盘上加载fsimage
       namesystem.loadFSImage(startOpt);
     } catch (IOException ioe) {
       LOG.warn("Encountered exception loading fsimage", ioe);
@@ -1197,6 +1211,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     try {
       // We shouldn't be calling saveNamespace if we've come up in standby state.
       MetaRecoveryContext recovery = startOpt.createRecoveryContext();
+      // 核心代码
       final boolean staleImage
           = fsImage.recoverTransitionRead(startOpt, this, recovery);
       if (RollingUpgradeStartupOption.ROLLBACK.matches(startOpt)) {
@@ -1207,6 +1222,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
           + " (staleImage=" + staleImage + ", haEnabled=" + haEnabled
           + ", isRollingUpgrade=" + isRollingUpgrade() + ")");
       if (needToSave) {
+        //合并完edits log之后 保存新的fsimage到磁盘上
         fsImage.saveNamespace(this);
       } else {
         // No need to save, so mark the phase done.
@@ -3395,13 +3411,28 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     final String operationName = "mkdirs";
     FileStatus auditStat = null;
     checkOperation(OperationCategory.WRITE);
+    //主要就是检查hdfs操作系统的权限
     final FSPermissionChecker pc = getPermissionChecker();
     FSPermissionChecker.setOperationType(operationName);
     try {
+      /*下面的这些代码是核心代码的执行
+      1）在内存的文件目录树中加入创建的目录
+      2)肯定会写入一个edits log到磁盘文件中去，记录本次元数据更新的操作日志
+      * */
+      /*关注一下人家对内存中的数据结构进行修改的时候，如何保证多线程的并发安全性
+      就是加锁，你现在肯定是要修改内存中的数据结构了，所以此时你就可以使用最经典的读写锁
+      这里就是加一个写锁
+      别人就不能同时也来写了，别人此时也不能读，会不会导致并发能力很低啊
+      因为是纯内存数据结构，所以说还好，纯内存操作，一般性能都是在微秒级甚至是纳秒级
+      可以学习到对于纯内存的数据结构进行并发操作的时候，加锁一般都是很快的，同时又可以保证多线程并发安全性
+      * */
       writeLock();
       try {
+        //检查时都有权限进行操作
         checkOperation(OperationCategory.WRITE);
+        //检查namenode是否处于安全模式
         checkNameNodeSafeMode("Cannot create directory " + src);
+        //关键的代码
         auditStat = FSDirMkdirOp.mkdirs(this, pc, src, permissions,
             createParent);
       } finally {
@@ -3411,6 +3442,9 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       logAuditEvent(false, operationName, src);
       throw e;
     }
+    //3.锁释放之后，强制sync
+    //edits log到磁盘文件中去，在上面的2步骤中，仅仅可能是将edits log写入了一些内存的缓冲区中
+    //可能是还没有强制同步到磁盘文件里去，反而是在这里，强制同步edits log到磁盘里去。
     getEditLog().logSync();
     logAuditEvent(true, operationName, src, null, auditStat);
     return true;
@@ -4272,6 +4306,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       //get datanode commands
       final int maxTransfer = blockManager.getMaxReplicationStreams()
           - xmitsInProgress;
+      // DateNodeManager顾名思义，本来就是负责管理namenode的
+      // 人家现在datanode发送了心跳过来，肯定是DataNodeManager来进行处理的。
       DatanodeCommand[] cmds = blockManager.getDatanodeManager().handleHeartbeat(
           nodeReg, reports, getBlockPoolId(), cacheCapacity, cacheUsed,
           xceiverCount, maxTransfer, failedVolumes, volumeFailureSummary,
@@ -4281,7 +4317,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
         blockReportLeaseId =  blockManager.requestBlockReportLeaseId(nodeReg);
       }
 
-      //create ha status
+      // create ha status
+      // 告诉datanode，当前namenode是active还是standby
       final NNHAStatusHeartbeat haState = new NNHAStatusHeartbeat(
           haContext.getState().getServiceState(),
           getFSImage().getCorrectLastAppliedOrWrittenTxId());

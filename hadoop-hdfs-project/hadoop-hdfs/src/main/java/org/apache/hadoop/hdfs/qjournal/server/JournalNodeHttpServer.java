@@ -83,6 +83,9 @@ public class JournalNodeHttpServer {
     httpServer.setAttribute(JspHelper.CURRENT_CONF, conf);
     httpServer.addInternalServlet("getJournal", "/getJournal",
         GetJournalEditServlet.class, true);
+    /*人家http server一定会绑定一个servelt
+     * 由servelt提供对应的接口，供被人来调用这个http接口
+     * 可以看到这里是提供了一个getJournal的一个接口，估计是不是这个接口就是供人家读取edits log*/
     httpServer.start();
 
     HttpConfig.Policy policy = DFSUtil.getHttpPolicy(conf);

@@ -362,6 +362,11 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
 
     if (proxyInfo != null) {
       this.dtService = proxyInfo.getDelegationTokenService();
+      //这里创建ClientProtocol  名称为namenode
+      //ClientProtocol其实是一个类型，在实际分布式系统的过程中，rpc这块东西
+      //人家会根据你的接口的定义，动态的创建出来一个动态代理，客户端代理，这个其实用的是java里的代理模式
+      //namenode(ClientProtocol类型)他就是在hdfs Client的一个代理
+      //如果你调用ClientProtocol的接口，人家在底层会发起一个网络请求，跟namenode的server端进行通信。
       this.namenode = proxyInfo.getProxy();
     } else if (rpcNamenode != null) {
       // This case is used for testing.
@@ -2479,6 +2484,8 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
    */
   public boolean mkdirs(String src, FsPermission permission,
       boolean createParent) throws IOException {
+    //这种FsPermission无关紧要 不要看
+    //createParent这种代表创建时是不是迭代式的 父目录也创建出来
     final FsPermission masked = applyUMaskDir(permission);
     return primitiveMkdir(src, masked, createParent);
   }
@@ -2504,6 +2511,11 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
     }
     LOG.debug("{}: masked={}", src, absPermission);
     try (TraceScope ignored = tracer.newScope("mkdir")) {
+      /*这里比较关键，其实HDFSClient 在这里会跟namenode进行通信
+       * 创建目录这件事情，其实跟datanode没有关系
+       * 目录他只是元数据，仅仅是存在于namenode的文件目录树里，内存里，fsimage，所以仅仅跟namenode有关系
+       * 其实就是使用rpc调用的方式，走一个rpc协议，直接底层网络请求，调用了namenode的rpc接口
+       * namenode的rpc接口里就会完成目录的创建（内存里的文件目录树维护，写edits log到磁盘文件中去）*/
       return namenode.mkdirs(src, absPermission, createParent);
     } catch (RemoteException re) {
       throw re.unwrapRemoteException(AccessControlException.class,

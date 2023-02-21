@@ -756,6 +756,7 @@ class BlockSender implements java.io.Closeable {
     final TraceScope scope = FsTracer.get(null)
         .newScope("sendBlock_" + block.getBlockId());
     try {
+      // 核心代码逻辑
       return doSendBlock(out, baseStream, throttler);
     } finally {
       scope.close();
@@ -809,6 +810,9 @@ class BlockSender implements java.io.Closeable {
 
       while (endOffset > offset && !Thread.currentThread().isInterrupted()) {
         manageOsCache();
+        // 和之前的hdfs block上传的时候
+        // 先发送一个空块，建立管道，初始化好对应的BlockReceiver.Responder
+        // 一个一个packet的发送过去
         long len = sendPacket(pktBuf, maxChunksPerPacket, streamForSendChunks,
             transferTo, throttler);
         offset += len;
@@ -819,6 +823,7 @@ class BlockSender implements java.io.Closeable {
       if (!Thread.currentThread().isInterrupted()) {
         try {
           // send an empty packet to mark the end of the block
+          // 发送完所有的packet之后，就会发送一个空的packet表名block已经传输结束了
           sendPacket(pktBuf, maxChunksPerPacket, streamForSendChunks, transferTo,
               throttler);
           out.flush();

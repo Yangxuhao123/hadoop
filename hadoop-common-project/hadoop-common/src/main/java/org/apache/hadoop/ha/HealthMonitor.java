@@ -194,6 +194,11 @@ public class HealthMonitor {
       HAServiceStatus status = null;
       boolean healthy = false;
       try {
+        // 他有一个HAServiceProtocol,里面是rpc协议
+        // 通过HAServiceProtocol，去调用active namenode的rpc接口
+        // 人家就是每隔1秒发送一个rpc请求到active namenode上去，查看一下他的状态
+        // 假如说active namenode死掉了，那么导致这里调用失败
+        // 或者是active namenode自己检查了一下自己，发现自己的资源不足了，会报错
         status = proxy.getServiceStatus();
         proxy.monitorHealth();
         healthy = true;
@@ -206,6 +211,7 @@ public class HealthMonitor {
               targetToMonitor, t);
           RPC.stopProxy(proxy);
           proxy = null;
+          // 会发现active namenode可能压根不响应了
           enterState(State.SERVICE_NOT_RESPONDING);
           Thread.sleep(sleepAfterDisconnectMillis);
           return;

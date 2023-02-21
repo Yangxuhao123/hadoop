@@ -67,6 +67,10 @@ import org.apache.hadoop.util.Time;
  * EditLogTailer represents a thread which periodically reads from edits
  * journals and applies the transactions contained within to a given
  * FSNamesystem.
+ *
+ * EditLogTailer代表了一个后台线程，这个后台线程会不断的周期性的从journal nodes集群上拉去Edits log数据流
+ * 接着就将edits log数据流应用到自己的FSNameSystem上去，也就是自己本地的元数据上去。
+ *
  */
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
@@ -85,6 +89,7 @@ public class EditLogTailer {
   public static final long DFS_HA_TAILEDITS_MAX_TXNS_PER_LOCK_DEFAULT =
       Long.MAX_VALUE;
 
+  //内部线程
   private final EditLogTailerThread tailerThread;
   
   private final Configuration conf;
@@ -261,6 +266,7 @@ public class EditLogTailer {
         " sleepTime=" + sleepTimeMs);
   }
 
+  //搜索EditLogTailerThread类的run方法
   public void start() {
     tailerThread.start();
   }
@@ -330,6 +336,8 @@ public class EditLogTailer {
     try {
       FSImage image = namesystem.getFSImage();
 
+      //lastTxnId，其实说的是最近一个应用到standby namenode本地
+      //元数据上的edits log的txid  假设这边lastTxnId = 171
       long lastTxnId = image.getLastAppliedTxId();
       
       if (LOG.isDebugEnabled()) {
@@ -338,6 +346,8 @@ public class EditLogTailer {
       Collection<EditLogInputStream> streams;
       long startTime = Time.monotonicNow();
       try {
+        // selectInputStreams 这里的意思就是说 希望尝试读取
+        // lastTxnId + 1 = 172，意思说，他希望从journal node上获取txid = 172的edits log
         streams = editLog.selectInputStreams(lastTxnId + 1, 0,
             null, inProgressOk, true);
       } catch (IOException ioe) {
@@ -360,6 +370,11 @@ public class EditLogTailer {
       // disk are ignored.
       long editsLoaded = 0;
       try {
+        //执行FSImage的loadEdits()方法，将edit log输入流传入进去
+        //FSImage代表了人家的元数据
+        //底层使用了EditLogInputStream从journalnodes读尝试拉去更新的edits log
+        //如果拉取到了，肯定在这个方法的内部，就会用到元数据里去。
+        //核心方法
         editsLoaded = image.loadEdits(
             streams, namesystem, maxTxnsPerLock, null, null);
       } catch (EditLogInputException elie) {
@@ -376,6 +391,7 @@ public class EditLogTailer {
       if (editsLoaded > 0) {
         lastLoadTimeMs = monotonicNow();
       }
+      // 更新最新一次加载的TxnId
       lastLoadedTxnId = image.getLastAppliedTxId();
       return editsLoaded;
     } finally {
@@ -457,7 +473,8 @@ public class EditLogTailer {
     private void setShouldRun(boolean shouldRun) {
       this.shouldRun = shouldRun;
     }
-    
+
+    //搜索run()方法
     @Override
     public void run() {
       SecurityUtil.doAsLoginUserOrFatal(
@@ -478,6 +495,12 @@ public class EditLogTailer {
           // There's no point in triggering a log roll if the Standby hasn't
           // read any more transactions since the last time a roll was
           // triggered.
+          /*如果距离上次roll edits log以后，standby一直没有接收到更多的edits log
+           * 触发一次active namenode的edits log roll
+           * edits log roll是个什么操作
+           * 大概可以理解为，重新创建一个edits_inprogress文件
+           * 之前的文件固定为startTransactionId——endTransactionId
+           * */
           boolean triggeredLogRoll = false;
           if (tooLongSinceLastLoad() &&
               lastRollTriggerTxId < lastLoadedTxnId) {
@@ -501,6 +524,7 @@ public class EditLogTailer {
           try {
             NameNode.getNameNodeMetrics().addEditLogTailInterval(
                 startTime - lastLoadTimeMs);
+            //核心方法
             editsTailed = doTailEdits();
           } finally {
             namesystem.cpUnlock();
@@ -533,6 +557,7 @@ public class EditLogTailer {
           } else {
             currentSleepTimeMs = sleepTimeMs; // reset to initial sleep time
           }
+          //这里是standby namenode默认是每隔60s（1min） 去尝试获取journal node上的edits log
           EditLogTailer.this.sleep(currentSleepTimeMs);
         } catch (InterruptedException e) {
           LOG.warn("Edit log tailer interrupted: {}", e.getMessage());

@@ -830,8 +830,11 @@ public class DatanodeManager {
     assert namesystem.hasWriteLock();
     heartbeatManager.removeDatanode(nodeInfo);
     if (removeBlocksFromBlocksMap) {
+      // 假如说，本来block在datanode01，datanode02，datanode03，现在datanode02死掉了
+      // 那么就会变成，block在datanode01，datanode03上了
       blockManager.removeBlocksAssociatedTo(nodeInfo);
     }
+    // datanode组成的集群网络拓扑里面删除
     networktopology.remove(nodeInfo);
     decrementVersionCount(nodeInfo.getSoftwareVersion());
     blockManager.getBlockReportLeaseManager().unregister(nodeInfo);
@@ -875,6 +878,7 @@ public class DatanodeManager {
       NameNode.stateChangeLog.info(
           "BLOCK* removeDeadDatanode: lost heartbeat from " + d
               + ", removeBlocksFromBlockMap " + removeBlocksFromBlockMap);
+      // 核心代码逻辑
       removeDatanode(d, removeBlocksFromBlockMap);
     }
   }
@@ -1780,6 +1784,8 @@ public class DatanodeManager {
     if (nodeinfo == null || !nodeinfo.isRegistered()) {
       return new DatanodeCommand[]{RegisterCommand.REGISTER};
     }
+    //HeartbeatManager底层就是调用了那个DataNodeDescriptor的处理心跳的方法
+    //DataNodeDescriptor无非就是再更新一些磁盘使用空间的数据，更新了一下最近一次进行心跳的时间
     heartbeatManager.updateHeartbeat(nodeinfo, reports, cacheCapacity,
         cacheUsed, xceiverCount, failedVolumes, volumeFailureSummary);
 
@@ -1813,6 +1819,7 @@ public class DatanodeManager {
             + " erasure-coded tasks: " + numECTasks);
       }
       // check pending replication tasks
+      // 在这里，就可以获取到这个DataNode对应的replication复制任务
       List<BlockTargetPair> pendingList = nodeinfo.getReplicationCommand(
           numReplicationTasks);
       if (pendingList != null && !pendingList.isEmpty()) {

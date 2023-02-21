@@ -42,12 +42,16 @@ class FSDirMkdirOp {
 
   static FileStatus mkdirs(FSNamesystem fsn, FSPermissionChecker pc, String src,
       PermissionStatus permissions, boolean createParent) throws IOException {
+    //重点  FSDirectory是纯内存操作
     FSDirectory fsd = fsn.getFSDirectory();
     if(NameNode.stateChangeLog.isDebugEnabled()) {
       NameNode.stateChangeLog.debug("DIR* NameSystem.mkdirs: " + src);
     }
     fsd.writeLock();
     try {
+      /*看方法大概知道，是通过FSDirectory获取/usr/warehouse/hive中已经存在的路径
+      可能人家通过解析会发现说，/usr/warehouse已经存在了，那么你只需要创建一个/hive目录就可以了
+      * */
       INodesInPath iip = fsd.resolvePath(pc, src, DirOp.CREATE);
 
       final INode lastINode = iip.getLastINode();
@@ -55,6 +59,7 @@ class FSDirMkdirOp {
         throw new FileAlreadyExistsException("Path is not a directory: " + src);
       }
 
+      //从这个位置开始，尝试创建后续的目录
       if (lastINode == null) {
         if (fsd.isPermissionEnabled()) {
           fsd.checkAncestorAccess(pc, iip, FsAction.WRITE);
@@ -74,6 +79,11 @@ class FSDirMkdirOp {
         INodesInPath existing =
             createParentDirectories(fsd, iip, permissions, false);
         if (existing != null) {
+          //核心方法在这里
+          //假设: /usr/warehouse/hive/data
+          //已经存在的目录是/usr/warehouse
+          //此时按照这个逻辑，就是先创建一个/usr/warehouse/hive的INodeDirectory,给挂到目录树里去
+          //然后再创建一个/usr/warehouse/hive/data对应的INodeDirectory,给挂到目录树里去
           existing = createSingleDirectory(
               fsd, existing, iip.getLastLocalName(), permissions);
         }
@@ -166,6 +176,7 @@ class FSDirMkdirOp {
       INodesInPath existing, byte[] localName, PermissionStatus perm)
       throws IOException {
     assert fsd.hasWriteLock();
+    //核心代码在这里
     existing = unprotectedMkdir(fsd, fsd.allocateNewInodeId(), existing,
         localName, perm, null, now());
     if (existing == null) {
@@ -178,6 +189,7 @@ class FSDirMkdirOp {
     NameNode.getNameNodeMetrics().incrFilesCreated();
 
     String cur = existing.getPath();
+    //记录操作日志
     fsd.getEditLog().logMkDir(cur, newNode);
     if (NameNode.stateChangeLog.isDebugEnabled()) {
       NameNode.stateChangeLog.debug("mkdirs: created directory " + cur);
@@ -221,6 +233,7 @@ class FSDirMkdirOp {
     final INodeDirectory dir = new INodeDirectory(inodeId, name, permission,
         timestamp);
 
+    //核心代码在这里
     INodesInPath iip =
         fsd.addLastINode(parent, dir, permission.getPermission(), true);
     if (iip != null && aclEntries != null) {

@@ -678,6 +678,11 @@ public class NameNode extends ReconfigurableBase implements
   }
 
   protected void loadNamesystem(Configuration conf) throws IOException {
+    //很明显是在创建和初始化FSNameSystem
+    //namenode启动的时候，会将磁盘上的fsimage文件和edits两个文件读取到内存里来进行合并
+    //合并了以后就是最新的一份元数据
+    //然后其实在这里就是这个意思，loadFromDisk()方法说的就是从磁盘上读取fsimage文件和edits文件
+    //合并出来的元数据，就会作为FSNamesystem放在内存里
     this.namesystem = FSNamesystem.loadFromDisk(conf);
   }
 
@@ -761,13 +766,17 @@ public class NameNode extends ReconfigurableBase implements
       metrics.getJvmMetrics().setGcTimeMonitor(gcTimeMonitor);
     }
 
+    //启动http server
     if (NamenodeRole.NAMENODE == role) {
       startHttpServer(conf);
     }
 
+    //初始化FSNameSystem
+    //主要是在这里，从磁盘上加载fsimage和之后edits log进行合并
     loadNamesystem(conf);
     startAliasMapServerIfNecessary(conf);
 
+    //初始化rpc server
     rpcServer = createRpcServer(conf);
 
     initReconfigurableBackoffKey();
@@ -1017,9 +1026,12 @@ public class NameNode extends ReconfigurableBase implements
     this.haContext = createHAContext();
     try {
       initializeGenericKeys(conf, nsId, namenodeId);
+      //初始化这个namenode，推测，NameNode启动server的核心源码，应该就在这里
       initialize(getConf());
       state.prepareToEnterState(haContext);
       try {
+        //切换HA的一些状态， 比如通过zk的选举，有一个namenode会进入active状态
+        //另外一个会进入standby状态
         haContext.writeLock();
         state.enterState(haContext);
       } finally {
@@ -1720,6 +1732,10 @@ public class NameNode extends ReconfigurableBase implements
     }
     setStartupOption(conf, startOpt);
 
+    /*之前从传入的参数里解析出来了一个startOpt参数
+     * 就是我们在执行操作命令的时候，hdfs namenode -format
+     * 比如这种-format机会作为参数传递进来，
+     * 在这里就是startOpt，就是告诉人家要执行什么操作*/
     boolean aborted = false;
     switch (startOpt) {
     case FORMAT:
@@ -1825,11 +1841,15 @@ public class NameNode extends ReconfigurableBase implements
   /**
    */
   public static void main(String argv[]) throws Exception {
+    //检查参数是否合法
     if (DFSUtil.parseHelpArgument(argv, NameNode.USAGE, System.out, true)) {
       System.exit(0);
     }
 
     try {
+      //namenode启动的主线程，肯定是创建了一个namenode实例
+      //核心代码，createNameNode()创建了一个namenode实例
+      //namenode实例创建过程，以及初始化过程
       StringUtils.startupShutdownMessage(NameNode.class, argv, LOG);
       NameNode namenode = createNameNode(argv, null);
       if (namenode != null) {

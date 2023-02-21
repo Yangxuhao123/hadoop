@@ -661,6 +661,9 @@ class BPServiceActor implements Runnable {
         //
         // Every so often, send heartbeat or block-report
         //
+        // 判断当前时间是不是该发送心跳了
+        // 你配置了5秒钟发送一次心跳，在这里就会每隔5秒钟执行一下这个代码
+        // 默认情况下是3秒钟，发送一次心跳
         final boolean sendHeartbeat = scheduler.isHeartbeatDue(startTime);
         HeartbeatResponse resp = null;
         if (sendHeartbeat) {
@@ -674,6 +677,7 @@ class BPServiceActor implements Runnable {
           boolean requestBlockReportLease = (fullBlockReportLeaseId == 0) &&
                   scheduler.isBlockReportDue(startTime);
           if (!dn.areHeartbeatsDisabledForTests()) {
+            // 发送心跳过后，会得到HeartbeatResponse
             resp = sendHeartBeat(requestBlockReportLease);
             assert resp != null;
             if (resp.getFullBlockReportLeaseId() != 0) {
@@ -696,6 +700,11 @@ class BPServiceActor implements Runnable {
             // Important that this happens before processCommand below,
             // since the first heartbeat to a new active might have commands
             // that we should actually process.
+            // 这边的话就是根据namenode返回的状态(active or standby)
+            // 更新当前BPServiceActor的状态，一组namenode是两个namenode，一个active,另一个standby.
+            // 每个namenode都对应一个BPServiceActor，保存自己对应的namenode状态
+            // 发送心跳的时候，如果感知到了namenode的状态发生了切换，active -> standby
+            // BPServiceActor也是要更新自己的状态
             bpos.updateActorStatesFromHeartbeat(
                 this, resp.getNameNodeHaState());
             state = resp.getNameNodeHaState().getState();
@@ -703,9 +712,16 @@ class BPServiceActor implements Runnable {
             if (state == HAServiceState.ACTIVE) {
               handleRollingUpgradeStatus(resp);
             }
+            // 每次在收到心跳的时候，都会拿到namenode给datanode的一些指令
             commandProcessingThread.enqueue(resp.getCommands());
           }
         }
+        //block在被datanode接收到了以后，不是同步通知namenode
+        //先会加入一个队列里面
+        //其实就是在BPServiceActor线程，默认是5分钟将最近接收到的或者删除的block
+        //一次性批量的上报给namenode
+
+        //全量的汇报，block report，默认的间隔是6小时
         if (!dn.areIBRDisabledForTests() &&
             (ibrManager.sendImmediately()|| sendHeartbeat)) {
           ibrManager.sendIBRs(bpNamenode, bpRegistration,
@@ -722,6 +738,7 @@ class BPServiceActor implements Runnable {
           cmds = blockReport(fullBlockReportLeaseId);
           fullBlockReportLeaseId = 0;
         }
+        // 核心代码
         commandProcessingThread.enqueue(cmds);
 
         if (!dn.areCacheReportsDisabledForTests()) {
@@ -846,11 +863,15 @@ class BPServiceActor implements Runnable {
   public void run() {
     LOG.info(this + " starting to offer service");
 
+    // BPServiceActor是一个线程
+    // 一旦对BPServiceActor这个线程执行了start()方法启动了这个线程之后
+    // 实际上来说，这个线程的工作逻辑就在这run()方法中
     try {
       while (true) {
         // init stuff
         try {
           // setup storage
+          // 这里封装了整个datanode第一次启动进行注册的全过程
           connectToNNAndHandshake();
           break;
         } catch (IOException ioe) {
@@ -874,8 +895,14 @@ class BPServiceActor implements Runnable {
         initialRegistrationComplete.countDown();
       }
 
+      // 注册完毕之后
+      // 这个线程在这里会进入一个while true循环
+      // BlockPoolOfferService,BlockPoolServiceActor
+      // 这两个线程其实都是BlockPool，块管理的东西，还负责了跟namenode的通信
       while (shouldRun()) {
         try {
+          // 每隔几秒钟发送心跳，也是在这里
+          // 每隔一段时间，汇报自己的block report，也是在这里
           offerService();
         } catch (Exception ex) {
           LOG.error("Exception in BPOfferService for " + this, ex);

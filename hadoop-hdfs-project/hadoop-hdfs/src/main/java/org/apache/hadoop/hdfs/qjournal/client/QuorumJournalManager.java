@@ -102,7 +102,10 @@ public class QuorumJournalManager implements JournalManager {
   private final NamespaceInfo nsInfo;
   private final String nameServiceId;
   private boolean isActiveWriter;
-  
+
+  //里面封装了多个AsyncLogger
+  //在flush的时候，他会通过这个组件，里面AsyncLogger都会往一个Journalnode发送edits log
+  //他这里会封装一个quorum算法，只要大多数的journal node都写成功了，就算ok
   private final AsyncLoggerSet loggers;
 
   private static final int OUTPUT_BUFFER_CAPACITY_DEFAULT = 512 * 1024;
@@ -435,6 +438,8 @@ public class QuorumJournalManager implements JournalManager {
         layoutVersion);
     loggers.waitForWriteQuorum(q, startSegmentTimeoutMs,
         "startLogSegment(" + txId + ")");
+    //无论是write还是flush，都是通过这个流来的
+    //核心的原理是差不多的，只不过flush写入的地方不同而已，都是基于双缓冲机制
     return new QuorumOutputStream(loggers, txId, outputBufferCapacity,
         writeTxnsTimeoutMs, layoutVersion);
   }

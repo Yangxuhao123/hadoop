@@ -2362,6 +2362,9 @@ public class DataNode extends ReconfigurableBase
       LOG.info("{} Starting thread to transfer {} to {}", bpReg, block,
           xferTargetsString);
 
+      // datanode接收到namenode下发的指令过后
+      // 当然不能是直接自己就同步的去进行block的复制，那样就太慢了
+      // 他会启动一个线程异步的执行block复制
       final DataTransfer dataTransferTask = new DataTransfer(xferTargets,
           xferTargetStorageTypes, xferTargetStorageIDs, block,
           BlockConstructionStage.PIPELINE_SETUP_CREATE, "");
@@ -2375,6 +2378,7 @@ public class DataNode extends ReconfigurableBase
       String[][] xferTargetStorageIDs) {
     for (int i = 0; i < blocks.length; i++) {
       try {
+        // 核心代码
         transferBlock(new ExtendedBlock(poolId, blocks[i]), xferTargets[i],
             xferTargetStorageTypes[i], xferTargetStorageIDs[i]);
       } catch (IOException ie) {
@@ -2570,6 +2574,8 @@ public class DataNode extends ReconfigurableBase
 
         String storageId = targetStorageIds.length > 0 ?
             targetStorageIds[0] : null;
+        // 其实就跟block上传的时候是类似的
+        // 先发送一个请求过去跟对方的datanode建立管道
         new Sender(out).writeBlock(b, targetStorageTypes[0], accessToken,
             clientname, targets, targetStorageTypes, srcNode,
             stage, 0, 0, 0, 0, blockSender.getChecksum(), cachingStrategy,
@@ -2577,6 +2583,7 @@ public class DataNode extends ReconfigurableBase
             targetStorageIds);
 
         // send data & checksum
+        // 发送数据过去
         blockSender.sendBlock(out, unbufOut, throttler);
 
         // no response necessary
@@ -2660,6 +2667,7 @@ public class DataNode extends ReconfigurableBase
   /**
    * After a block becomes finalized, a datanode increases metric counter,
    * notifies namenode, and adds it to the block scanner
+   * 当一个block传输完毕之后，就存在finalized目录下，并且通知namenode，加上一个block scanner
    * @param block block to close
    * @param delHint hint on which excess block to delete
    * @param storageUuid UUID of the storage where block is stored

@@ -1509,6 +1509,7 @@ class BlockReceiver implements Closeable {
           if (lastPacketInBlock) {
             // Finalize the block and close the block file
             // 彻底结束掉接收这个block需要的各种IO资源、线程资源，关闭对磁盘文件的输出流。
+            // 如果收到是一个空包，就认为是这个block中的最后一个packet
             finalizeBlock(startTime);
           }
 
@@ -1562,7 +1563,7 @@ class BlockReceiver implements Closeable {
       if (pinning) {
         datanode.data.setPinning(block);
       }
-      
+      //核心代码
       datanode.closeBlock(block, null, replicaInfo.getStorageUuid(),
           replicaInfo.isOnTransientStorage());
       if (ClientTraceLog.isInfoEnabled() && isClient) {

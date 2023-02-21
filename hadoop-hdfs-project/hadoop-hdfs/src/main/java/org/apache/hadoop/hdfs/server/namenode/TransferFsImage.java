@@ -246,6 +246,7 @@ public class TransferFsImage {
     URL url = new URL(fsName, ImageServlet.PATH_SPEC);
     long startTime = Time.monotonicNow();
     try {
+      //核心方法
       uploadImage(url, conf, storage, nnf, txid, canceler);
     } catch (HttpPutFailedException e) {
       // translate the error code to a result, which is a bit more obvious in usage
@@ -311,6 +312,7 @@ public class TransferFsImage {
       ImageServlet.setVerificationHeadersForPut(connection, imageFile);
 
       // Write the file to output stream.
+      // 核心方法
       writeFileToPutRequest(conf, connection, imageFile, canceler);
 
       int responseCode = connection.getResponseCode();
@@ -337,6 +339,8 @@ public class TransferFsImage {
     OutputStream output = connection.getOutputStream();
     FileInputStream input = new FileInputStream(imageFile);
     try {
+      /*1) 一边从自己的本地磁盘文件读取fsimage文件，构造一个FileInputStream输入流
+       * 2) 一边将这个文件输出到active namenode的httpserver的输出流里去，通过http上传fsimage文件*/
       copyFileToStream(output, imageFile, input,
           ImageServlet.getThrottler(conf), canceler);
     } finally {

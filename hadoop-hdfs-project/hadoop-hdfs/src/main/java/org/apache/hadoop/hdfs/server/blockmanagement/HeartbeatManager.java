@@ -441,11 +441,15 @@ class HeartbeatManager implements DatanodeStatistics {
       int numOfStaleStorages = 0;
       List<DatanodeDescriptor> staleNodes = new ArrayList<>();
       synchronized(this) {
+        // 之前只要注册过的datanode，都会在这个datanode列表中
+        // 只要直接遍历这个datanode列表就可以了
         for (DatanodeDescriptor d : datanodes) {
           // check if an excessive GC pause has occurred
+          // 判断一个datanode是否宕机了
           if (shouldAbortHeartbeatCheck(0)) {
             return;
           }
+          // 如果两次心跳时间超过了10min30s，就认为这个datanode宕机了
           if (dead == null && dm.isDatanodeDead(d)) {
             stats.incrExpiredHeartbeats();
             dead = d;
@@ -495,6 +499,7 @@ class HeartbeatManager implements DatanodeStatistics {
         // acquire the fsnamesystem lock, and then remove the dead node.
         namesystem.writeLock();
         try {
+          // 核心代码逻辑
           dm.removeDeadDatanode(dead, !dead.isMaintenance());
         } finally {
           namesystem.writeUnlock();
@@ -523,6 +528,9 @@ class HeartbeatManager implements DatanodeStatistics {
         restartHeartbeatStopWatch();
         try {
           final long now = Time.monotonicNow();
+          // 最近一次进行心跳的时间 + 心跳检查间隔的时间 < 当前时间
+          // 每隔一段时间，就会执行一次心跳检查，默认情况下，是30s执行一次心跳的检查
+          // 如果发现某个datanode超过10分钟没有发送过心跳了，就认为这个datanode已经死掉了
           if (lastHeartbeatCheck + heartbeatRecheckInterval < now) {
             heartbeatCheck();
             lastHeartbeatCheck = now;

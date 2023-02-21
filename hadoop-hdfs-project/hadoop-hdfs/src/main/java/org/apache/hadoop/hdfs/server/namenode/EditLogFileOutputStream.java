@@ -100,6 +100,8 @@ public class EditLogFileOutputStream extends EditLogOutputStream {
 
   @Override
   public void write(FSEditLogOp op) throws IOException {
+    //什么叫做内存双缓冲机制的输出
+    //其实就是在将数据写入双缓冲的其中一块缓冲区里面
     doubleBuf.writeOp(op, getCurrentLogVersion());
   }
 
@@ -208,6 +210,9 @@ public class EditLogFileOutputStream extends EditLogOutputStream {
       return;
     }
     preallocate(); // preallocate file if necessary
+    //fp底层就是java io底层的FileOutStream,每次都会根据transcationId生成一个文件名
+    //rp = new RandomAccessFile(name,'rws')
+    //fp = new FileOutStream(rp.getFD());
     doubleBuf.flushTo(fp);
     if (durable && !shouldSkipFsyncForTests && !shouldSyncWritesAndSkipFsync) {
       fc.force(false); // metadata updates not needed

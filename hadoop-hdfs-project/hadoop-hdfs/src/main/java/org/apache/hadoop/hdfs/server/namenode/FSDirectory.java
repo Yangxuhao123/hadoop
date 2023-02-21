@@ -151,6 +151,15 @@ public class FSDirectory implements Closeable {
         .isdir(true)
         .build();
 
+  /*其实就是从这个东西往下延伸，就是一个内存里的文件目录树
+  这个就是文件目录的一个根节点
+  人家的类型就是所谓的INodeDirectory，本质你上是一个INode，inode概念模仿了linux的概念
+  linux中，inode就代表了文件目录树中的一个节点，他可以是目录，也可以是文件；
+  hdfs中借鉴了linux的概念，inode，INode类，代表了hdfs文件目录树中的一个节点，可以是目录，也可以是文件；
+  如果是目录的话，就是一个子类INodeFDirectory，代表了一个目录
+  如果是文件的话，就是一个子类INodeFile，代表了一个文件；
+  * */
+  //他其实就代表了一个文件目录树
   INodeDirectory rootDir;
   private final FSNamesystem namesystem;
   private volatile boolean skipQuotaCheck = false; //skip while consuming edits
@@ -159,6 +168,12 @@ public class FSDirectory implements Closeable {
   private final int lsLimit;  // max list limit
   private final int contentCountLimit; // max content summary counts per run
   private final long contentSleepMicroSec;
+
+  //inodeMap可能是一个比较关键的内存数据结构，也许就是内存中的文件目录树
+  //但是当我们看完了INodeFIleDirectory和INodeFile组成的文件目录树之后，就不会这么认为了
+  //存储所有的inode，并且维护一份inode id和inode之间的映射关系
+  //这个其实就是一个映射数据结构：inode id ——>  inode
+  //他这个数据结构是为了后面方便根据映射关系来查找inode的数据，丛树形数据结构查找比较麻烦。
   private final INodeMap inodeMap; // Synchronized by dirLock
   private long yieldCount = 0; // keep track of lock yield count.
   private int quotaInitThreads;
@@ -1348,6 +1363,7 @@ public class FSDirectory implements Closeable {
               + "existing file or directory to another name before upgrading "
               + "to the new release.");
     }
+    //这里大概的意思就是获取到了parent目录，/usr/warehouse已经存在的目录，对应的INodeDirectory
     final INodeDirectory parent = existing.getINode(pos - 1).asDirectory();
     // The filesystem limits are not really quotas, so this check may appear
     // odd. It's because a rename operation deletes the src, tries to add
@@ -1373,6 +1389,9 @@ public class FSDirectory implements Closeable {
     updateCount(existing, pos, counts, checkQuota);
 
     boolean isRename = (inode.getParent() != null);
+    //核心代码在这里
+    //大概认为就是将/usr/warehouse/hive对应的INodeDirectory
+    //加入到了/usr/warehouse目录对应的INodeDirectory里面的children列表中去
     final boolean added = parent.addChild(inode, true,
         existing.getLatestSnapshotId());
     if (!added) {

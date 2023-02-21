@@ -253,6 +253,8 @@ public class NameNodeHttpServer {
     httpServer.addInternalServlet(IsNameNodeActiveServlet.SERVLET_NAME,
         IsNameNodeActiveServlet.PATH_SPEC,
         IsNameNodeActiveServlet.class);
+    //activenamnode提供了一个image transfer的接口
+    //专门用来接收standby namenode执行完checkpoint之后发送过来的fsimage文件
     httpServer.addInternalServlet(NetworkTopologyServlet.SERVLET_NAME,
         NetworkTopologyServlet.PATH_SPEC, NetworkTopologyServlet.class);
   }

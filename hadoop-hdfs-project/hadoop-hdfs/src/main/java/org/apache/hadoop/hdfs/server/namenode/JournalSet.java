@@ -207,7 +207,9 @@ public class JournalSet implements JournalManager {
     throw new UnsupportedOperationException();
   }
 
-  
+  /*开启一个新的log segment 日志段，edits log是分段存储的，基于txid分段存储的；
+   * 在namenode启动的时候，FSImage加载磁盘文件上的fsimage和edtis log进行合并，
+   * 合并完了以后，重新fsimage写回磁盘，然后开启一个新的edtis log segment，在这里初始化EditLogOutputStream*/
   @Override
   public EditLogOutputStream startLogSegment(final long txId,
       final int layoutVersion) throws IOException {
@@ -217,6 +219,9 @@ public class JournalSet implements JournalManager {
         jas.startLogSegment(txId, layoutVersion);
       }
     }, "starting log segment " + txId);
+    //他的返回EditLogOutputStream其实是在这里
+    //创建出来的一个JournalSetOutputStream
+    //JournalSetOutputStream就是底层封装了多个流的聚合流
     return new JournalSetOutputStream();
   }
   
@@ -387,6 +392,7 @@ public class JournalSet implements JournalManager {
       JournalClosure closure, String status) throws IOException{
 
     List<JournalAndStream> badJAS = Lists.newLinkedList();
+    //遍历自己的JournalSet自己内部的多个流，都在Journals里面
     for (JournalAndStream jas : journals) {
       try {
         closure.apply(jas);
@@ -454,10 +460,14 @@ public class JournalSet implements JournalManager {
     @Override
     public void write(final FSEditLogOp op)
         throws IOException {
+      //核心方法
       mapJournalsAndReportErrors(new JournalClosure() {
         @Override
         public void apply(JournalAndStream jas) throws IOException {
           if (jas.isActive()) {
+            //比如说，有一个JournalAndStream底层封装的是FileJournalManager
+            //此时就会先基于FileJournalManager，执行getCurrentStream()方法，获取到针磁盘文件的流
+            //使用针对磁盘文件的那个流的write()方法，将edits log写入到磁盘文件中去
             jas.getCurrentStream().write(op);
           }
         }
@@ -601,6 +611,12 @@ public class JournalSet implements JournalManager {
   }
   
   void add(JournalManager j, boolean required, boolean shared) {
+    //其实可能会往JournalSet中加入多个JournalManager
+    //可能是FileJournalManager，有可能是QuorumJournalManager
+    //从我们现在的hdfs集群来看，他是namenode自己本身有写edits log到磁盘文件，同时也会写一份到JournalNodes
+    //每次JournalSet加入一个JournalManager的时候，都会创建一个JournalAndStream流
+    //这个JournalAndStream是从哪儿来的呢？
+    //这个流底层是封装了JournalManager的，依赖他的。
     JournalAndStream jas = new JournalAndStream(j, required, shared);
     journals.add(jas);
   }

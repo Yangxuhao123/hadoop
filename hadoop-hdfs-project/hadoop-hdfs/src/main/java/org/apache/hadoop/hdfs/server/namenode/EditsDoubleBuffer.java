@@ -41,11 +41,19 @@ import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
  * to progress concurrently to flushes without allocating new buffers each
  * time.
  */
+/* 新的edits log是写入到第一个buffer缓冲区里面去的，他里面是有两个buffer
+ * 第二个buffer缓冲区是用来刷新内存数据到磁盘上或者网络中去的
+ * 每次双缓冲区被刷新的时候（第二个buffer缓冲区被刷新到磁盘或者网络），两个buffer缓冲区会交换一下
+ * 这个可以允许edits log持续写入内存缓冲的时候，还可以同时将内存缓冲中的数据刷新到磁盘或者网络中去。
+ */
 @InterfaceAudience.Private
 public class EditsDoubleBuffer {
   protected static final Logger LOG =
       LoggerFactory.getLogger(EditsDoubleBuffer.class);
 
+  //里面放了两个缓冲区
+  //每个缓冲区，都是基于DataOutputStream来实现的
+  //其实说白了，就是将数据写入到内存中，这个是JDK IO这块底层的API
   private TxnBuffer bufCurrent; // current buffer for writing
   private TxnBuffer bufReady; // buffer ready for flushing
   private final int initBufferSize;
@@ -58,6 +66,7 @@ public class EditsDoubleBuffer {
   }
 
   public void writeOp(FSEditLogOp op, int logVersion) throws IOException {
+    //就是将数据写入bufCurrent这块缓冲区中
     bufCurrent.writeOp(op, logVersion);
   }
 

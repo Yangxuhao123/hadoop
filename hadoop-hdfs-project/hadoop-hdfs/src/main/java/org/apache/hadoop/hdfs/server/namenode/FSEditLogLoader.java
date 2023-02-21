@@ -179,6 +179,7 @@ public class FSEditLogLoader {
             + " maxTxnsToRead = " + maxTxnsToRead +
             LogThrottlingHelper.getLogSupressionMessage(preLogAction));
       }
+      //核心代码逻辑
       long numEdits = loadEditRecords(edits, false, expectedStartingTxId,
           maxTxnsToRead, startOpt, recovery);
       long endTime = timer.monotonicNow();
@@ -236,10 +237,17 @@ public class FSEditLogLoader {
     long lastInodeId = fsNamesys.dir.getLastInodeId();
     
     try {
+      //核心读取edits log的逻辑
+      //不断地调用EditLogInputStream的readOp()方法
+      //按理说readOp()这个方法应该是每次都会读取到一条edits log
+      //如果读取到一条edits log，就会将edits log应用到自己stand by本地的元数据里去
+      //如果没有读到edits log，就跳出循环
       while (true) {
         try {
           FSEditLogOp op;
           try {
+            //可以认为，这里不断地通过基于http的InputStream  相当于这个一个http的客户端
+            //不断地从journal node上读取一个接一个的edits log，可以应用到自己本地
             op = in.readOp();
             if (op == null) {
               break;
@@ -284,6 +292,7 @@ public class FSEditLogLoader {
               LOG.trace("op=" + op + ", startOpt=" + startOpt
                   + ", numEdits=" + numEdits + ", totalEdits=" + totalEdits);
             }
+            // 将edits log用到自己standby namenode本地的元数据里去
             long inodeId = applyEditLogOp(op, fsDir, startOpt,
                 in.getVersion(true), lastInodeId);
             if (lastInodeId < inodeId) {
@@ -637,6 +646,8 @@ public class FSEditLogLoader {
       MkdirOp mkdirOp = (MkdirOp)op;
       inodeId = getAndUpdateLastInodeId(mkdirOp.inodeId, logVersion,
           lastInodeId);
+      //将元数据应用到了自己的FSDirectory里边去
+      //更新了一下文件目录树
       FSDirMkdirOp.mkdirForEditLog(fsDir, inodeId,
           renameReservedPathsOnUpgrade(mkdirOp.path, logVersion),
           mkdirOp.permissions, mkdirOp.aclEntries, mkdirOp.timestamp);

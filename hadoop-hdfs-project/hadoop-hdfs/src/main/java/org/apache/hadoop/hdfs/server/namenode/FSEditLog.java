@@ -156,6 +156,11 @@ public class FSEditLog implements LogsPurgeable {
   //initialize
   private JournalSet journalSet = null;
 
+  /*EditLogOutputStream的类型，肯定是一个包装流，里面封装了好几个其他的底层的流
+  EditLogOutputStream里封装了一个写本地磁盘的流，还封装了一个写JournalNode流
+  你在这里写一条edits log 的时候
+  EditLogOutputStream就会把这条数据通过两个流写到两个地方去
+  * */
   @VisibleForTesting
   EditLogOutputStream editLogStream = null;
 
@@ -214,6 +219,9 @@ public class FSEditLog implements LogsPurgeable {
   }
 
   // stores the most current transactionId of this thread.
+  //ThreadLocal,也就是说每个线程都可以有一个副本，每个线程在同步代码块中，通过txid++全局唯一递增之后
+  //他就将这个递增好的txid放入自己的ThreadLoacl变量副本中
+  //后面他就是用自己的ThreadLocal中的txid就可以了，如果有其他线程再次对txid++，无所谓
   private static final ThreadLocal<TransactionId> myTransactionId = new ThreadLocal<TransactionId>() {
     @Override
     protected synchronized TransactionId initialValue() {
@@ -252,8 +260,11 @@ public class FSEditLog implements LogsPurgeable {
      
     // If this list is empty, an error will be thrown on first use
     // of the editlog, as no journals will exist
+    //这个位置就是代表说namenode是将edits log写入到自己本地磁盘的那个目录中
+    //默认应该就是hadoop.tmp.dir下面的一个路径
     this.editsDirs = Lists.newArrayList(editsDirs);
 
+    //这个是自己指定将数据写入到哪些journal node集群上去
     this.sharedEditsDirs = FSNamesystem.getSharedEditsDirs(conf);
   }
   
@@ -289,12 +300,16 @@ public class FSEditLog implements LogsPurgeable {
       for (URI u : dirs) {
         boolean required = FSNamesystem.getRequiredNamespaceEditsDirs(conf)
             .contains(u);
+        //如果当前传入进来的URI，是本地文件系统的话
         if (u.getScheme().equals(NNStorage.LOCAL_URI_SCHEME)) {
           StorageDirectory sd = storage.getStorageDirectory(u);
           if (sd != null) {
+            //就会创建FileJournalManager，这是专门负责将edits log写入到本地磁盘的
             journalSet.add(new FileJournalManager(conf, sd, storage),
                 required, sharedEditsDirs.contains(u));
           }
+          //如果不是本地文件系统的话，那么就会在这里createJournal
+          //会创建出来QuorumJournalManager，是专门负责将edits log写入到JournalNode上的
         } else {
           journalSet.add(createJournal(u), required,
               sharedEditsDirs.contains(u));
@@ -457,7 +472,12 @@ public class FSEditLog implements LogsPurgeable {
    * if a time interval has elapsed).
    */
   void logEdit(final FSEditLogOp op) {
+    //写edits log的主要流程
     boolean needsSync = false;
+    /*FSEditLog这个组件，这个实例对象，他其实在namenode算全局唯一的；
+    他就是一个核心组件，synchronized(this)，基本就是保证多线程并发写edits log的时候
+    一定是同步的。
+    * */
     synchronized (this) {
       assert isOpenForWrite() :
         "bad state: " + state;
@@ -465,8 +485,17 @@ public class FSEditLog implements LogsPurgeable {
       // wait if an automatic sync is scheduled
       waitIfAutoSyncScheduled();
 
+      // 这里有一个transaction机制相关的代码，开启了一个transaction
+      //在这里一定会分配一个transactionId
+      //txid：全局唯一，递增；
       beginTransaction(op);
       // check if it is time to schedule an automatic sync
+      //核心关键的代码
+      //分配txid，如何保证全局唯一id
+      //加了一把重量级的锁，如果是要记录操作日志的话，多个线程也许可以并发的记录修改元数据，不光是文件目录树
+      //其实还有很多东西，比如说修改一些配置
+      //多个线程去写edits log的话，在这里就会被卡住，这里是重量级同步；
+      //整个namenode中，同一时间，只能有一个线程进这段代码，去尝试记录edit log
       needsSync = doEditTransaction(op);
       if (needsSync) {
         isAutoSyncScheduled = true;
@@ -474,6 +503,9 @@ public class FSEditLog implements LogsPurgeable {
     }
 
     // Sync the log if an automatic sync is required.
+    //将edits log同步到磁盘上去
+    //edits log很可能刚开始是写到内存缓冲里的，然后写完内存缓冲之后，可以将一次性内存缓存中的edits log
+    //都写入到磁盘文件里去，做一次sync同步到磁盘操作
     if (needsSync) {
       logSync();
     }
@@ -484,14 +516,23 @@ public class FSEditLog implements LogsPurgeable {
     assert op.hasTransactionId() :
       "Transaction id is not set for " + op + " EditLog.txId=" + txid;
 
+    //此时还是处于synchronized锁定代码块中，此时txid是不会再次改变的
+    //每个FSEditslogOp就代表了一次元数据操作，就会有一个全局唯一的txid,transactionId
     long start = monotonicNow();
     try {
+      //这里使用EditLogOutputStream对外输出操作日志
+      //同时干了两件事情，1.将edits log写入本地磁盘文件
+      //2.将edits log写入Journal log
+      //FSEditLog初始化的时候，肯定会初始化这个EditLogOutputStream，不可能在其他地方初始化的。
+
+      //这个EditLogOutputStream最后调用的是JournalSetOutputStream
       editLogStream.write(op);
     } catch (IOException ex) {
       // All journals failed, it is handled in logSync.
     } finally {
       op.reset();
     }
+    //结束当前的transaction
     endTransaction(start);
     return shouldForceSync();
   }
@@ -529,15 +570,24 @@ public class FSEditLog implements LogsPurgeable {
   }
   
   protected void beginTransaction(final FSEditLogOp op) {
+    //当前这个线程是否持有了锁，如果没有的话，就不会瞎折腾
     assert Thread.holdsLock(this);
     // get a new transactionId
+    // 就是对txid自增
+    // 其实可以用actomicLong这个数据类型，也可以保证全局唯一的递增
     txid++;
+
+    //线程1：txid++  此时txid=76
+    //线程2：又进来了，txid++，此时txid=77
 
     //
     // record the transactionId when new data was written to the edits log
-    //
+    // myTransactionId是一个ThreadLoacl类型
     TransactionId id = myTransactionId.get();
     id.txid = txid;
+    //将txid=76放入了自己的ThreadLocal本地变量副本中
+    //线程1：是无所谓的，线程1后面在任何时刻如果要取自己的txid，就是从通过ThreadLocal中获取本地变量副本就可以了
+    //线程1一直看到的就是txid=76
     if(op != null) {
       op.setTransactionId(txid);
     }
@@ -635,8 +685,15 @@ public class FSEditLog implements LogsPurgeable {
    *   - The isSyncRunning volatile boolean tracks whether a sync is currently
    *     under progress.
    *
+   *     每个edits log都会被串行化同步写入到一个内存缓冲区，而且都会被分配了一个全局唯一递增的transcationId；
+   *     如果一个线程要执行sync操作，此时会从ThreadLocal获取他的txid，然后根据txid来判断是否要这个线程来执行flush；
+   *     isSyncRunning变量是标注出来flush操作是否正在执行的。
+   *
    * The data is double-buffered within each edit log implementation so that
    * in-memory writing can occur in parallel with the on-disk writing.
+   *
+   * 每种EditLogOutputStream的流里都有包含这个双缓冲机制，所以说这个多线程可以快速的串行写入内存缓冲
+   * 同时还可以允许某个线程再执行flush操作到磁盘。
    *
    * Each sync occurs in three steps:
    *   1. synchronized, it swaps the double buffer and sets the isSyncRunning
@@ -644,12 +701,18 @@ public class FSEditLog implements LogsPurgeable {
    *   2. unsynchronized, it flushes the data to storage
    *   3. synchronized, it resets the flag and notifies anyone waiting on the
    *      sync.
+   * 1）synchronized交换双缓冲区，设置isSyncRunning标志位
+   * 2）unsynchronized，刷新内存数据到磁盘上去
+   * 3）synchronized，重置isSyncRunning标志位，通知在阻塞的线程
    *
    * The lack of synchronization on step 2 allows other threads to continue
    * to write into the memory buffer while the sync is in progress.
    * Because this step is unsynchronized, actions that need to avoid
    * concurrency with sync() should be synchronized and also call
    * waitForSyncToFinish() before assuming they are running alone.
+   *
+   * 第二个人步骤，没有synchronized加锁，是因为要允许在flush数据到磁盘的时候，
+   * 还可以让其他线程继续往内存缓冲里写入这个edits log，这两个步骤可以同步执行，提升写edits log并发能力。
    */
   public void logSync() {
     // Fetch the transactionId of this thread.
@@ -667,6 +730,20 @@ public class FSEditLog implements LogsPurgeable {
           printStatistics(false);
 
           // if somebody is already syncing, then wait
+          // 同一时间只能有一个线程在执行同步内存buffer到磁盘上的工作，所以在这里
+          //有一个isSyncRunning标志位，如果是true的话，说明有某个线程正在同步buffer到磁盘上去
+          //while true 的循环和等待，等前面的那个线程先同步完了，他再来同步
+
+          //1)假设三个线程，transcationId分别为1、2、3
+          //此时txid = 1的线程，正在执行 sync到磁盘的工作   线程1已经执行完了下面所有的代码，释放了锁
+          //此时txid = 3的线程，就获取到了synchronized锁，进入了这个代码块
+          //此时，mytxid = 3 > synctxid = 1,isSyncRunning = true,就会陷入while true等待
+
+          //2)过了一会，txid = 1的线程已经完成了内存的flush，此时txid = 1的edits log已经进入了磁盘的
+          //一个segment文件中去了，isSyncRunning会修改为false。
+          //此时txid = 3的线程跳出等待循环,释放锁，进行flush到内存  线程2已经执行完了下面所有的代码，释放了锁
+
+          //3）这是txid = 2的线程获取到了锁，mytxid = 2 < synctxid = 3  所以不进行等待
           while (mytxid > synctxid && isSyncRunning) {
             try {
               wait(1000);
@@ -676,7 +753,8 @@ public class FSEditLog implements LogsPurgeable {
   
           //
           // If this transaction was already flushed, then nothing to do
-          //
+          // mytxid =2 <= synctxid =3 所以直接继续返回 因为在线程3同步的时候
+          // 已经将线程2和3写的edits log都刷到磁盘上去了
           if (mytxid <= synctxid) {
             return;
           }
@@ -702,6 +780,7 @@ public class FSEditLog implements LogsPurgeable {
             if (journalSet.isEmpty()) {
               throw new IOException("No journals available to flush");
             }
+            //交换缓冲区的核心逻辑
             editLogStream.setReadyToFlush();
           } catch (IOException e) {
             final String msg =
@@ -727,6 +806,19 @@ public class FSEditLog implements LogsPurgeable {
       long start = monotonicNow();
       try {
         if (logStream != null) {
+          //在这里，人家在logSync()方法中，就调用了EditLogOutputStream.flush()方法
+          //他底层会调用所有的flush()方法
+          //将之前写入缓冲区的数据，此时刷新到磁盘或者网络(journalNode)
+
+          //这块代码块是不加锁的，txid = 1的线程，正在这里执行sync操作
+          //将内存的数据flush到磁盘上去
+
+          //此时txid = 3的线程，会同时将txid = 2 和txid = 3的两个edits log都在这
+          //flush到内存中去   因为在有交换buffer存在 1在同步的时候 2和3都在往缓冲区里写
+
+          //如果这里加synchronized
+          //此时就是每个线程，从内存中buffer，一直到flush到磁盘，都是串行化的，
+          //多线程并发写edits log的能力很弱
           logStream.flush();
         }
       } catch (IOException ex) {
@@ -908,6 +1000,7 @@ public class FSEditLog implements LogsPurgeable {
     if (x != null) {
       op.setXAttrs(x.getXAttrs());
     }
+    //构造完了之后，就会在这里logEdit(op)，实际完成日志的一个记录
     logEdit(op);
   }
   
@@ -1425,6 +1518,10 @@ public class FSEditLog implements LogsPurgeable {
     storage.attemptRestoreRemovedStorage();
     
     try {
+      //核心代码
+      //这里调用journalSet初始化了一个新的EditOutputStream
+      //这个OutputStream在write的时候，就会依次调用底层封装的FileJournalManager写入磁盘
+      //同时也会调用QuorumJournalManager写入到JournalManager里去
       editLogStream = journalSet.startLogSegment(segmentTxId, layoutVersion);
     } catch (IOException ex) {
       final String msg = "Unable to start log segment " + segmentTxId
@@ -1442,6 +1539,7 @@ public class FSEditLog implements LogsPurgeable {
 
   synchronized void startLogSegmentAndWriteHeaderTxn(final long segmentTxId,
       int layoutVersion) throws IOException {
+    //核心代码
     startLogSegment(segmentTxId, layoutVersion);
 
     logEdit(LogSegmentOp.getInstance(cache.get(),

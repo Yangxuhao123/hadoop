@@ -183,6 +183,8 @@ public class JournalNodeRpcServer implements QJournalProtocol,
     jn.getOrCreateJournal(journalId, nameServiceId).format(nsInfo, force);
   }
 
+  /*人家发送edits log过来，一定是走到这里面，调用的是这个接口
+   * */
   @Override
   public void journal(RequestInfo reqInfo,
       long segmentTxId, long firstTxnId,

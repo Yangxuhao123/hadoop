@@ -253,8 +253,11 @@ class AsyncLoggerSet {
   
   public QuorumCall<AsyncLogger, Void> sendEdits(
       long segmentTxId, long firstTxnId, int numTxns, byte[] data) {
+    //每个AsyncLogger会对应一个journal node来发送数据
+    //所以说每个AsyncLogger都会对应一个ListenableFuture，就是用于监听异步发送的结果
     Map<AsyncLogger, ListenableFuture<Void>> calls = Maps.newHashMap();
     for (AsyncLogger logger : loggers) {
+      //在这里，对每个AsyncLogger都调用sendEdits()方法，通过rpc调用发送到journal node上去
       ListenableFuture<Void> future = 
         logger.sendEdits(segmentTxId, firstTxnId, numTxns, data);
       calls.put(logger, future);
