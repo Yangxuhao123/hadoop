@@ -2102,6 +2102,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       readLock();
       try {
         checkOperation(OperationCategory.READ);
+        // 走这个方法获取到了一个文件对应的各个block
         res = FSDirStatAndListingOp.getBlockLocations(
             dir, pc, srcArg, offset, length, true);
         inode = res.getIIp().getLastINode();

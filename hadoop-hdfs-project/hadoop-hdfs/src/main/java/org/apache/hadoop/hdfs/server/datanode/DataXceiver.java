@@ -608,6 +608,7 @@ class DataXceiver extends Receiver implements Runnable {
       writeSuccessWithChecksumInfo(blockSender, new DataOutputStream(getOutputStream()));
 
       long beginRead = Time.monotonicNow();
+      // 不断的读取本地磁盘block文件的数据，然后写给hdfs客户端
       read = blockSender.sendBlock(out, baseStream, null); // send data
       long duration = Time.monotonicNow() - beginRead;
       if (blockSender.didSendEntireByteRange()) {

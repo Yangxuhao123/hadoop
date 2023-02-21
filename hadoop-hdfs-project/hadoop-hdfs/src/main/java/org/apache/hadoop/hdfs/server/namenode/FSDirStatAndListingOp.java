@@ -176,6 +176,11 @@ class FSDirStatAndListingOp {
       final ErasureCodingPolicy ecPolicy = FSDirErasureCodingOp.
           unprotectedGetErasureCodingPolicy(fsd.getFSNamesystem(), iip);
 
+      // 最后一定是走BlockManager去获取的block对应的数据
+      // BlockManager是管理block数据的
+      // 如果你可以定位到那个文件对应的Inode，就可以知道那个Inode包含了哪些Block
+      // inode的每个block都有一个triplets数组，这个数组里面就存放了一个block的多个副本
+      // 这个block在哪些datanode上有一个副本
       final LocatedBlocks blocks = bm.createLocatedBlocks(
           inode.getBlocks(iip.getPathSnapshotId()), fileSize, isUc, offset,
           length, needBlockToken, iip.isSnapshot(), feInfo, ecPolicy);

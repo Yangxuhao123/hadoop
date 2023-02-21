@@ -1049,6 +1049,7 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
     //    Get block info from namenode
     try (TraceScope ignored = newPathTraceScope("newDFSInputStream", src)) {
       LocatedBlocks locatedBlocks = getLocatedBlocks(src, 0);
+      // 核心代码逻辑
       return openInternal(locatedBlocks, src, verifyChecksum);
     }
   }

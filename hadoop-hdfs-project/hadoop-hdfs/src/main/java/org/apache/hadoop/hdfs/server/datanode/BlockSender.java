@@ -428,6 +428,7 @@ class BlockSender implements java.io.Closeable {
       if (DataNode.LOG.isDebugEnabled()) {
         DataNode.LOG.debug("replica=" + replica);
       }
+      // 直接定位到本地block磁盘文件的输入流
       blockIn = datanode.data.getBlockInputStream(block, offset); // seek to offset
       ris = new ReplicaInputStreams(
           blockIn, checksumIn, volumeRef, fileIoProvider);
@@ -791,6 +792,7 @@ class BlockSender implements java.io.Closeable {
           && baseStream instanceof SocketOutputStream
           && ris.getDataIn() instanceof FileInputStream;
       if (transferTo) {
+        // 使用的是NIO在读取本地磁盘文件的数据
         FileChannel fileChannel =
             ((FileInputStream)ris.getDataIn()).getChannel();
         blockInPosition = fileChannel.position();
@@ -806,6 +808,7 @@ class BlockSender implements java.io.Closeable {
         pktBufSize += (chunkSize + checksumSize) * maxChunksPerPacket;
       }
 
+      //NIO的API
       ByteBuffer pktBuf = ByteBuffer.allocate(pktBufSize);
 
       while (endOffset > offset && !Thread.currentThread().isInterrupted()) {
@@ -824,6 +827,7 @@ class BlockSender implements java.io.Closeable {
         try {
           // send an empty packet to mark the end of the block
           // 发送完所有的packet之后，就会发送一个空的packet表名block已经传输结束了
+          // packet是64kb，每个packet包含了127个chunk，一个chunk是516字节
           sendPacket(pktBuf, maxChunksPerPacket, streamForSendChunks, transferTo,
               throttler);
           out.flush();

@@ -243,11 +243,16 @@ public class DFSInputStream extends FSInputStream
 
   /**
    * Grab the open-file info from namenode
+   *
+   * 看起来这个方法是在说，他会从namenode去获取某些需要打开的文件的数据
+   *
    * @param refreshLocatedBlocks whether to re-fetch locatedblocks
    */
   void openInfo(boolean refreshLocatedBlocks) throws IOException {
     final DfsClientConf conf = dfsClient.getConf();
     synchronized(infoLock) {
+      // 这个方法，看起来好像就是在跟namenode发送请求，获取文件对应的block的数据
+      // 同时获取到文件里最后一个block的长度
       lastBlockBeingWrittenLength =
           fetchLocatedBlocksAndGetLastBlockLength(refreshLocatedBlocks);
       int retriesForLastBlockLength = conf.getRetryTimesForGetLastBlockLength();
@@ -331,6 +336,9 @@ public class DFSInputStream extends FSInputStream
       throws IOException {
     LocatedBlocks newInfo = locatedBlocks;
     if (locatedBlocks == null || refresh) {
+      if (locatedBlocks == null || refresh) {
+        // 这行代码是比较关键的一行，从namenode获取道文件对应的block列表
+        // 在这里获取到了一个文件对应的所有的block，以及每个block在哪些datanode上
       newInfo = dfsClient.getLocatedBlocks(src, 0);
     }
     DFSClient.LOG.debug("newInfo = {}", newInfo);
@@ -635,10 +643,15 @@ public class DFSInputStream extends FSInputStream
     }
   }
 
-  /**
-   * Open a DataInputStream to a DataNode so that it can be read from.
-   * We get block ID and the IDs of the destinations at startup, from the namenode.
-   */
+    /**
+     * Open a DataInputStream to a DataNode so that it can be read from.
+     * We get block ID and the IDs of the destinations at startup, from the namenode.
+     *
+     * 我们刚开始在DFSInputStream初始化的时候，就跟namenode通信获取到了block的ID以及副本所在的datanode机器
+     * 在这里就会对指定位置的block(刚开始肯定是第一个block)，就会打开一个输入流，连接道哪个block的某个副本
+     * 所在的datanode上去，以便可以开始从那个datanode读取数据
+     *
+     */
   private synchronized DatanodeInfo blockSeekTo(long target)
       throws IOException {
     if (target >= getFileLength()) {
@@ -656,6 +669,7 @@ public class DFSInputStream extends FSInputStream
 
     boolean connectFailedOnce = false;
 
+    // 大概认为往下面的代码，肯定就是开始连接datanode以及获取输入流了
     while (true) {
       // Re-fetch the locatedBlocks from NN if the timestamp has expired.
       updateBlockLocationsStamp();
@@ -663,7 +677,7 @@ public class DFSInputStream extends FSInputStream
       //
       // Compute desired block
       //
-
+      // 获取第一个block对一个LocatedBlock对象
       LocatedBlock targetBlock = getBlockAt(target);
 
       // update current position
@@ -674,6 +688,8 @@ public class DFSInputStream extends FSInputStream
 
       long offsetIntoBlock = target - targetBlock.getStartOffset();
 
+      // 很明显就是对第一个block从它对应的3个副本所在的datanode上
+      // 获取一个对应的datanode
       DNAddrPair retval = chooseDataNode(targetBlock, null);
       chosenNode = retval.info;
       InetSocketAddress targetAddr = retval.addr;
@@ -682,6 +698,7 @@ public class DFSInputStream extends FSInputStream
       targetBlock = retval.block;
 
       try {
+        // 构造出来一个BlockReader对象
         blockReader = getBlockReader(targetBlock, offsetIntoBlock,
             targetBlock.getBlockSize() - offsetIntoBlock, targetAddr,
             storageType, chosenNode);
@@ -727,6 +744,7 @@ public class DFSInputStream extends FSInputStream
   protected BlockReader getBlockReader(LocatedBlock targetBlock,
       long offsetInBlock, long length, InetSocketAddress targetAddr,
       StorageType storageType, DatanodeInfo datanode) throws IOException {
+    // 获取到这个block对应的一个对象
     ExtendedBlock blk = targetBlock.getBlock();
     Token<BlockTokenIdentifier> accessToken = targetBlock.getBlockToken();
     CachingStrategy curCachingStrategy;
@@ -735,6 +753,8 @@ public class DFSInputStream extends FSInputStream
       curCachingStrategy = cachingStrategy;
       shortCircuitForbidden = shortCircuitForbidden();
     }
+    // 构造出来一个BlockReader组件
+    // 很明显，这个BlockReader组件就是专门负责跟datanode通信读取block数据的
     return new BlockReaderFactory(dfsClient.getConf()).
         setInetSocketAddress(targetAddr).
         setRemotePeerFactory(dfsClient).
@@ -822,6 +842,7 @@ public class DFSInputStream extends FSInputStream
      */
     boolean retryCurrentNode = true;
 
+    // 不断的用这个BlockReader在while循环里读取数据
     while (true) {
       // retry as many times as seekToNewSource allows.
       try {
@@ -869,6 +890,9 @@ public class DFSInputStream extends FSInputStream
     }
 
     int len = strategy.getTargetLength();
+      // 如果有一个block在读取的过程中发现有破损
+      // 可能会放在这里，而且会标识出来是这个block在哪个datanode上的副本破损了
+      // 下次就不会从这个datanode去下载副本了
     CorruptedBlocks corruptedBlocks = new CorruptedBlocks();
     failures = 0;
     if (pos < getFileLength()) {
@@ -879,6 +903,13 @@ public class DFSInputStream extends FSInputStream
           // error on the same block. See HDFS-3067
           // currentNode needs to be updated if the blockLocations timestamp has
           // expired.
+          // pos: 这个变量的作用，就是标识一下，当前在读第几个block
+          // currentNode代表的就是当前正在从哪个datanode上读取block
+          // 如果说是在读一个block的话，主要是这个block的packet还没读完
+          // 这里一定是currentNode不是null
+
+          // 如果说你的pos的位置超过了一个block应该有的大小的位置之后
+          // 此时重新定位到下一个block，开始连接那个datanode
           if (pos > blockEnd || currentNode == null
               || updateBlockLocationsStamp()) {
             currentNode = blockSeekTo(pos);
@@ -890,9 +921,12 @@ public class DFSInputStream extends FSInputStream
                   locatedBlocks.getFileLength() - pos);
             }
           }
+          // 这个方法在读取数据
+          // 就是从指定的位置读取数据
           int result = readBuffer(strategy, realLen, corruptedBlocks);
 
           if (result >= 0) {
+            // 每次你读取完一块数据，pos就会不断的增加
             pos += result;
           } else {
             // got a EOS from reader though we expect more data on it.
@@ -1061,6 +1095,7 @@ public class DFSInputStream extends FSInputStream
       DatanodeInfo[] cachedLocs = block.getCachedLocations();
       if (cachedLocs != null) {
         for (int i = 0; i < cachedLocs.length; i++) {
+          // 只要是遍历到的datanode不在deadnodes列表中
           if (isValidNode(cachedLocs[i], ignoredNodes)) {
             chosenNode = cachedLocs[i];
             break;

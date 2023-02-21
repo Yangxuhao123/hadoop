@@ -336,6 +336,8 @@ public class DistributedFileSystem extends FileSystem
     return new FileSystemLinkResolver<FSDataInputStream>() {
       @Override
       public FSDataInputStream doCall(final Path p) throws IOException {
+        // 这里走的是这个方法，DFSClient.open()方法，创建了一个DFSInputStream的输入流
+        // 然后又用这个DFSClient包装成了一个HDFSDataInputStream
         final DFSInputStream dfsis =
             dfs.open(getPathName(p), bufferSize, verifyChecksum);
         try {
