@@ -84,6 +84,9 @@ public class NameNodeResourceChecker {
         LOG.debug("Space available on volume '" + volume + "' is "
             + availableSpace);
       }
+      //duReserved就是默认配置好的最小需要的磁盘空间
+      //duReserved空间，默认的值就是100mb，默认情况起码edits目录必须要有100mb的剩余空间来写入日志
+      //否则的话会认为这里检查资源失败了
       if (availableSpace < duReserved) {
         LOG.warn("Space available on volume '" + volume + "' is "
             + availableSpace +

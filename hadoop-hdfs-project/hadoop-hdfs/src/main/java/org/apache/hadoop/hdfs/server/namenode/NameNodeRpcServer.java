@@ -252,6 +252,18 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   private final boolean serviceAuthEnabled;
 
   /** The RPC server that listens to requests from DataNodes */
+  //rpc是属于hadoop-common自己弄的一个rpc-server的服务,在hadoop各个项目中，都可以用rpc server
+  //rpc server监听一个端口号，可以给一个rpc server绑定一大堆小的service，每个小service内部都提供了一大堆的接口
+  //rpc server接收到了请求的话，就会转发给内部的小service来进行处理
+  /*
+  hadoop生态中的任何一个组件，如果要启动一个http server监听某个端口号，接收某些请求，没关系
+  底层的架构都被HttpServer2封装好了，你只要初始化一下，配置一下，加入一些映射请求的servlet
+  自己的namenode进程里就有一个组件可以监听那个端口发送来的http请求了
+
+  rpc.hadoop-common搞好了一个RPC.Server
+  只要初始化一个RPC.Server，然后配置一下，然后再里面加入一大堆的小Service，每个service都提供一大堆的接口方法
+  如果人家利用了一个这个接口之后，RPC.Server就会转过来调用你的小service的接口方法
+   */
   private final RPC.Server serviceRpcServer;
   private final InetSocketAddress serviceRPCAddress;
 
@@ -281,6 +293,11 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     RPC.setProtocolEngine(conf, ClientNamenodeProtocolPB.class,
         ProtobufRpcEngine2.class);
 
+    //看起来是一大堆的接口
+    //包括管理block、创建目录、创建文件、设置权限，一大堆的接口
+    //ClientNamenode
+    //这个里面的都是clent和namenode之间进行通信，需要调用的接口
+    //client好比是命令行（hadoop fs ****）
     ClientNamenodeProtocolServerSideTranslatorPB 
        clientProtocolServerTranslator = 
          new ClientNamenodeProtocolServerSideTranslatorPB(this);
@@ -289,6 +306,9 @@ public class NameNodeRpcServer implements NamenodeProtocols {
 
     int maxDataLength = conf.getInt(IPC_MAXIMUM_DATA_LENGTH,
         IPC_MAXIMUM_DATA_LENGTH_DEFAULT);
+    //这个里面也是一大堆接口
+    //注册datanode、发送心跳、blockReport汇报自己的block情况，等等，一大堆类似的接口
+    // Datanode***  代表datanode和namenode之间进行通信，需要调用的接口
     DatanodeProtocolServerSideTranslatorPB dnProtoPbTranslator = 
         new DatanodeProtocolServerSideTranslatorPB(this, maxDataLength);
     BlockingService dnProtoPbService = DatanodeProtocolService
@@ -299,6 +319,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     BlockingService lifelineProtoPbService = DatanodeLifelineProtocolService
         .newReflectiveBlockingService(lifelineProtoPbTranslator);
 
+    //可能是不同的namenode之间进行调用需要的接口
     NamenodeProtocolServerSideTranslatorPB namenodeProtocolXlator = 
         new NamenodeProtocolServerSideTranslatorPB(this);
     BlockingService NNPbService = NamenodeProtocolService
@@ -328,7 +349,9 @@ public class NameNodeRpcServer implements NamenodeProtocols {
         new GetUserMappingsProtocolServerSideTranslatorPB(this);
     BlockingService getUserMappingService = GetUserMappingsProtocolService
         .newReflectiveBlockingService(getUserMappingXlator);
-    
+
+    //这个里面的接口，转换为active namenode，转换standby namenode，当前是否存活
+    //这里面的接口都是为了主备namenode双节点HA切换需要被人家调用的接口
     HAServiceProtocolServerSideTranslatorPB haServiceProtocolXlator = 
         new HAServiceProtocolServerSideTranslatorPB(this);
     BlockingService haPbService = HAServiceProtocolService
@@ -339,6 +362,8 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     BlockingService reconfigurationPbService = ReconfigurationProtocolService
         .newReflectiveBlockingService(reconfigurationProtocolXlator);
 
+    //到上面为止，其实是在初始化rpc server关键的一块，就是哪些service可以负责接收哪些接口的调用
+    //这个serviceRpcAddr一看就是从配置文件里解析出来的，servcieRpcServer要监听的端口号
     InetSocketAddress serviceRpcAddr = nn.getServiceRpcServerAddress(conf);
     if (serviceRpcAddr != null) {
       String bindHost = nn.getServiceRpcServerBindHost(conf);
@@ -576,8 +601,10 @@ public class NameNodeRpcServer implements NamenodeProtocols {
    * Start client and service RPC servers.
    */
   void start() {
+    //clientRpcServer是一定会存在的，一定会去启动的
     clientRpcServer.start();
     if (serviceRpcServer != null) {
+      // 确实有可能servcieRpcServer是不会启动的，因为很可能就是null
       serviceRpcServer.start();      
     }
     if (lifelineRpcServer != null) {
@@ -589,6 +616,9 @@ public class NameNodeRpcServer implements NamenodeProtocols {
    * Wait until the RPC servers have shutdown.
    */
   void join() throws InterruptedException {
+    //只要rpc server还在运行，那么就会进入无限制的阻塞和等待，保证namenode进程不会消失
+    //如果namenode进程消失，这里的join()方法退出了，比如rpc server不在运行
+    //或者namenode进程内部有一些错误，oom，内存溢出
     clientRpcServer.join();
     if (serviceRpcServer != null) {
       serviceRpcServer.join();      

@@ -769,7 +769,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     //存放了磁盘上的fsimage文件里的数据，也就是代表了hdfs的元数据
     FSImage fsImage = new FSImage(conf,
             //人家都显示清楚了，是从哪个路径加载fsimage，就是从namespace dir
-            //可以推测，如英国你不做任何配置的话，fsimage文件默认是从目录：/tmp/apps/hadoop-root/tmp/dfs/name，来加载
+            //可以推测，如果你不做任何配置的话，fsimage文件默认是从目录：/tmp/apps/hadoop-root/tmp/dfs/name，来加载
         FSNamesystem.getNamespaceDirs(conf),
             //从哪里来加载edits 文件
             //默认的配置下，edits日志文件是跟fsimage文件是放在一起的
@@ -1198,6 +1198,10 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   private void loadFSImage(StartupOption startOpt) throws IOException {
     final FSImage fsImage = getFSImage();
+    //从磁盘上加载fsimage和edits两个文件的数据
+    //然后在内存中合并两个文件的数据
+    //接着将内存中的元数据会写一份到磁盘上去替换原来旧的fsimage文件
+    //写完一份新的fsimage之后，就会重新打开一个新的、空的edits文件来写入就可以了
 
     // format before starting up if requested
     if (startOpt == StartupOption.FORMAT) {
@@ -1234,6 +1238,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       // we shouldn't do it when coming up in standby state
       if (!haEnabled || (haEnabled && startOpt == StartupOption.UPGRADE)
           || (haEnabled && startOpt == StartupOption.UPGRADEONLY)) {
+        //打开一个全新的edits log
         fsImage.openEditLogForWrite(getEffectiveLayoutVersion());
       }
       success = true;
@@ -1283,14 +1288,23 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     writeLock();
     this.haContext = haContext;
     try {
+      //用来检查namenode所在linux上的磁盘空间是否还足够的
       nnResourceChecker = new NameNodeResourceChecker(conf);
+      //检查可用的资源是否充足
       checkAvailableResources();
+      //判断是否要进入安全模式
       assert !blockManager.isPopulatingReplQueues();
+      //目前的namenode启动，已经进入了safemode phase
+      //处于一个等待汇报blocks的step
       StartupProgress prog = NameNode.getStartupProgress();
       prog.beginPhase(Phase.SAFEMODE);
       long completeBlocksTotal = getCompleteBlocksTotal();
+      //判断是否要进入safemode模式
+      //以及如果进入了safemode模式之后会干什么事情
+      //入口方法都在setBlockTotal()方法
       prog.setTotal(Phase.SAFEMODE, STEP_AWAITING_REPORTED_BLOCKS,
           completeBlocksTotal);
+      //启动blockManager里面的后台线程
       blockManager.activate(conf, completeBlocksTotal);
     } finally {
       writeUnlock("startCommonServices");
@@ -4378,6 +4392,12 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     long resourceCheckTime = monotonicNow();
     Preconditions.checkState(nnResourceChecker != null,
         "nnResourceChecker not initialized");
+    // 使用nnResourceChecker检查是否有充足的磁盘空间
+    // 这里检查磁盘空间是为什么呢？
+    // edits 目录的剩余空间是否充足，如果你的hdfs namenode要正常的运行
+    // 首要的一个条件，就是说edits log必须可以正常的有足够的磁盘空间让namenode写入日志
+    // 如果edits 目录磁盘空间不够，导致namenode没法正常的写入日志
+    // 如果检查空间不够了，就会打印一个waring警告
     hasResourcesAvailable = nnResourceChecker.hasAvailableDiskSpace();
     resourceCheckTime = monotonicNow() - resourceCheckTime;
     NameNode.getNameNodeMetrics().addResourceCheckTime(resourceCheckTime);
@@ -5013,13 +5033,21 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
    * Get the total number of COMPLETE blocks in the system.
    * For safe mode only complete blocks are counted.
    * This is invoked only during NN startup and checkpointing.
+   * CompleteBlocks 就是说当前处于complete状态的block
+   * 有可能一个block的信息比如说datanode还没上报上来，或者说别的什么原因，正在构造block的对象
    */
   public long getCompleteBlocksTotal() {
     // Calculate number of blocks under construction
     long numUCBlocks = 0;
     readLock();
     try {
+      //返回under construction状态的block的数量
+      //可能是block还没收到汇报信息，或者是block的对象正在构造中
       numUCBlocks = leaseManager.getNumUnderConstructionBlocks();
+      //使用block的总数量 减去uncomplete block的数量
+      //最后就会得到一个complete block的数量
+      //使用block数量-处于under construction状态的block的数量 就是所有的当前处于complete状态的block
+      //处于complete状态的block 就是当前可以统计的block
       return getBlocksTotal() - numUCBlocks;
     } finally {
       readUnlock("getCompleteBlocksTotal");

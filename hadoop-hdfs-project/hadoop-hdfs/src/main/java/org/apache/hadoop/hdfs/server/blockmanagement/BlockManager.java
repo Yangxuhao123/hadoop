@@ -738,6 +738,7 @@ public class BlockManager implements BlockStatsMXBean {
   }
 
   public void activate(Configuration conf, long blockTotal) {
+    // 后台监控那些进行replication复制block被pending住的一些操作；
     pendingReconstruction.start();
     datanodeManager.activate(conf);
     this.redundancyThread.setName("RedundancyMonitor");

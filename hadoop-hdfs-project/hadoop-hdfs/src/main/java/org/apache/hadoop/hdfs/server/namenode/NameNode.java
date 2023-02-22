@@ -428,7 +428,19 @@ public class NameNode extends ReconfigurableBase implements
   protected NamenodeRegistration nodeRegistration;
   /** Activated plug-ins. */
   private List<ServicePlugin> plugins;
-  
+
+  //rpc是属于hadoop-common自己弄的一个rpc-server的服务,在hadoop各个项目中，都可以用rpc server
+  //rpc server监听一个端口号，可以给一个rpc server绑定一大堆小的service，每个小service内部都提供了一大堆的接口
+  //rpc server接收到了请求的话，就会转发给内部的小service来进行处理
+  /*
+  hadoop生态中的任何一个组件，如果要启动一个http server监听某个端口号，接收某些请求，没关系
+  底层的架构都被HttpServer2封装好了，你只要初始化一下，配置一下，加入一些映射请求的servlet
+  自己的namenode进程里就有一个组件可以监听那个端口发送来的http请求了
+
+  rpc.hadoop-common搞好了一个RPC.Server
+  只要初始化一个RPC.Server，然后配置一下，然后再里面加入一大堆的小Service，每个service都提供一大堆的接口方法
+  如果人家利用了一个这个接口之后，RPC.Server就会转过来调用你的小service的接口方法
+   */
   private NameNodeRpcServer rpcServer;
 
   private JvmPauseMonitor pauseMonitor;
@@ -876,6 +888,7 @@ public class NameNode extends ReconfigurableBase implements
 
   /** Start the services common to active and standby states */
   private void startCommonServices(Configuration conf) throws IOException {
+    //调用了FSNameSystem的startCommonServcies()
     namesystem.startCommonServices(conf, haContext);
     registerNNSMXBean();
     if (NamenodeRole.NAMENODE != role) {
@@ -886,6 +899,7 @@ public class NameNode extends ReconfigurableBase implements
         httpServer.setAliasMap(levelDBAliasMapServer.getAliasMap());
       }
     }
+    //启动了rpc server
     rpcServer.start();
     try {
       plugins = conf.getInstances(DFS_NAMENODE_PLUGINS_KEY,
@@ -1006,6 +1020,7 @@ public class NameNode extends ReconfigurableBase implements
 
   protected NameNode(Configuration conf, NamenodeRole role)
       throws IOException {
+    // 这里是核心代码，创建NameNode实例对象
     super(conf);
     this.tracer = new Tracer.Builder("NameNode").
         conf(TraceUtils.wrapHadoopConf(NAMENODE_HTRACE_PREFIX, conf)).
@@ -1738,6 +1753,7 @@ public class NameNode extends ReconfigurableBase implements
      * 在这里就是startOpt，就是告诉人家要执行什么操作*/
     boolean aborted = false;
     switch (startOpt) {
+    // 如果你传递的是-format，人家明显就是在做hdfs namenode目录结构的格式化
     case FORMAT:
       aborted = format(conf, startOpt.getForceFormat(),
           startOpt.getInteractiveFormat());
@@ -1782,6 +1798,7 @@ public class NameNode extends ReconfigurableBase implements
       return null;
     default:
       DefaultMetricsSystem.initialize("NameNode");
+      // 核心代码
       return new NameNode(conf);
     }
   }
@@ -1853,6 +1870,7 @@ public class NameNode extends ReconfigurableBase implements
       StringUtils.startupShutdownMessage(NameNode.class, argv, LOG);
       NameNode namenode = createNameNode(argv, null);
       if (namenode != null) {
+        //等待rpc server结束，理论上永远不会结束的
         namenode.join();
       }
     } catch (Throwable e) {

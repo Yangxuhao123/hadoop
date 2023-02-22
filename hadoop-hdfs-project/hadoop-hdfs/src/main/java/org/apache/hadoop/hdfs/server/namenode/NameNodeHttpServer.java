@@ -122,6 +122,13 @@ public class NameNodeHttpServer {
     final String httpsAddrString = conf.getTrimmed(
         DFSConfigKeys.DFS_NAMENODE_HTTPS_ADDRESS_KEY,
         DFSConfigKeys.DFS_NAMENODE_HTTPS_ADDRESS_DEFAULT);
+    //bindAddress，就是http server绑定在哪个端口上
+    //明显是自己可以配置，也是有自己的默认值，默认的http端口就是50070
+    //每次启动集群之后，就会访问他的50070端口
+
+    //NameNodeHttpServer 绑定了50070端口号 接受http请求
+    //他提供的最主要的一块 就是平时访问的hdfs工作台
+    //在这个端口上可以查看集群的状态、里面的元数据、目录结构、block信息
     InetSocketAddress httpsAddr = NetUtils.createSocketAddr(httpsAddrString);
 
     if (httpsAddr != null) {
@@ -134,6 +141,9 @@ public class NameNodeHttpServer {
       }
     }
 
+    // 这是hadoop自己实现的一套http服务
+    // hadoop http server这块，不是hdfs里的，是在hadoop-common里的，是整个hadoop通用的
+    // 其实就是实现了一套可以接收http请求的一套机制
     HttpServer2.Builder builder = DFSUtil.httpServerTemplateForNNAndJN(conf,
         httpAddr, httpsAddr, "hdfs",
         DFSConfigKeys.DFS_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY,
@@ -166,7 +176,11 @@ public class NameNodeHttpServer {
 
     httpServer.setAttribute(NAMENODE_ATTRIBUTE_KEY, nn);
     httpServer.setAttribute(JspHelper.CURRENT_CONF, conf);
+    // 这块代码是比较关键的
+    // 就是在httpserver2里面绑定了一些servlet
+    // 这些servlet相当于就是定义好了，自己可以接收哪些http请求，接收到了这些请求之后，由谁来处理
     setupServlets(httpServer);
+    // 完事了以后，启动httpserver2
     httpServer.start();
 
     int connIdx = 0;
@@ -244,6 +258,13 @@ public class NameNodeHttpServer {
   }
 
   private static void setupServlets(HttpServer2 httpServer) {
+    //HttpServer2是一种通用的http服务的技术
+    //可以针对你指定的这个端口号进行监听
+    //如果有人给这个端口发送请求，会被HttpServer2给拦截，他会做统一的请求转发
+    //比如请求了一个http://192.168.31.19:50070/listDirs?dir=/user/warehouse
+    //此时HttpServer2就需要将这个/listDIrs这个接口转发给对应的Servlet，哪个servlet在监听这个/listDirs的请求
+    //同时将dir=/user/warehouse的参数转发给那个servlet
+    //由那个servlet来进行处理，然后将结果返回给浏览器
     httpServer.addInternalServlet("startupProgress",
         StartupProgressServlet.PATH_SPEC, StartupProgressServlet.class);
     httpServer.addInternalServlet("fsck", "/fsck", FsckServlet.class,

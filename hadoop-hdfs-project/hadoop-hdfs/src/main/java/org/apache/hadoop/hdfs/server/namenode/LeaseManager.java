@@ -133,13 +133,21 @@ public class LeaseManager {
    * This method iterates through all the leases and counts the number of blocks
    * which are not COMPLETE. The FSNamesystem read lock MUST be held before
    * calling this method.
+   * 统计还不是完成状态的block数量
+   * 在namenode启动的时候，会进行一个safe mode的检查
+   * 会调用这个方法
    */
   synchronized long getNumUnderConstructionBlocks() {
     assert this.fsnamesystem.hasReadLock() : "The FSNamesystem read lock wasn't"
       + "acquired before counting under construction blocks";
     long numUCBlocks = 0;
+    // 这里的话就是在遍历所有的lease
+    // 每个lease里面有多个id，可以理解为一个id就是代表了一个文件,文件的路径：/usr/warehouse/hive/access.log
     for (Long id : getINodeIdWithLeases()) {
+      //会通过fsnamesystem里面有一个关键的东西：fsnamesystem.getFSDirectory().getInode(id)
+      // 就可以获取代表了/usr/warehouse/hive/access.log这个东西的一个文件对象  INodeFile
       INode inode = fsnamesystem.getFSDirectory().getInode(id);
+      //判断这个文件是否为空
       if (inode == null) {
         // The inode could have been deleted after getINodeIdWithLeases() is
         // called, check here, and ignore it if so
@@ -153,11 +161,17 @@ public class LeaseManager {
             cons.getFullPathName());
         continue;
       }
+      /* 这边就是通过INodeFile.getBlocks()方法
+       * 获取 /usr/warehouse/hive/access.log文件的blocks
+       * 每个文件都可以对应多个block，可以拆分未128M一个的block，所以一个文件可能有多个block
+       */
       BlockInfo[] blocks = cons.getBlocks();
       if(blocks == null) {
         continue;
       }
+      // 遍历这个block
       for(BlockInfo b : blocks) {
+        // 如果这个block的状态不是complete，那么这个block就属于一个under construction的blocks
         if(!b.isComplete()) {
           numUCBlocks++;
         }
