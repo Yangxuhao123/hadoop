@@ -518,6 +518,11 @@ class HeartbeatManager implements DatanodeStatistics {
   }
 
   /** Periodically check heartbeat and update block key */
+  /*在这个namenode启动的时候，HeartbeatManager就会自动启动一个后台线程
+    这个后台线程就是负责监控所有注册上来的datanode是否按时在发送心跳，如果没有按时发送心跳得话
+    就会认为这个datanode已经宕机了
+    此时就会将这个datanode从集群里面移除掉
+  */
   private class Monitor implements Runnable {
     private long lastHeartbeatCheck;
     private long lastBlockKeyUpdate;

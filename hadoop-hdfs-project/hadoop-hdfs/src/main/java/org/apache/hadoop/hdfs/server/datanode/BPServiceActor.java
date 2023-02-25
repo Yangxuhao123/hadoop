@@ -241,6 +241,14 @@ class BPServiceActor implements Runnable {
     NamespaceInfo nsInfo = null;
     while (shouldRun()) {
       try {
+        /**
+         * 相当于就是在底层bpNameNode作为一个RPC代理
+         * bpNameNode底层会构造一个网络请求，连接到namenode的rpc server端口上去
+         * 发送一个请求，这个请求里说明了是要调用这个versionRequest()方法
+         * rpc server会统一处理所有的rpc调用的网络连接和请求
+         * rpc server会将对应的接口方法的请求，转发给之前我们看到的小services具体来处理某个接口的请求
+         * rpc server最后会将这个相应结果返回给datanode
+         */
         nsInfo = bpNamenode.versionRequest();
         LOG.debug(this + " received versionRequest response: " + nsInfo);
         break;
@@ -283,15 +291,30 @@ class BPServiceActor implements Runnable {
 
   private void connectToNNAndHandshake() throws IOException {
     // get NN proxy
+    //连接到namenode
+    //bpNamenode其实就是一个负责进行rpc接口调用的一个东西，通过这个东西就可以让BPServcieActor
+    //以rpc接口调用的方式，去请求namenode
+    //bpNamenode就是一个rpc接口调用的代理，在datanode获取一个rpc代理之后，后面就可以通过这个代理跟namenode进行通信
     bpNamenode = dn.connectToNN(nnAddr);
 
     // First phase of the handshake with NN - get the namespace
     // info.
+    //通过上面的那个bpNameNode作为一个rpc代理，调用namenode的一个rpc接口
+    //获取到了一个namenode的NameSpaceInfo
+    //NameSpaceInfo大概就是包含了一些id，比如clusterId，nsId，blockPoolId包含了一些namenode的id
     NamespaceInfo nsInfo = retrieveNamespaceInfo();
 
     // Verify that this matches the other NN in this HA pair.
     // This also initializes our block pool in the DN if we are
     // the first NN connection for this BP.
+    //第一件事情 两个namenode都会返回一个NamespaceInfo，此处就会在第二个namenode返回NamespaceInfo的时候
+    //进行两个NameSpaceinfo的校验 检查一下他们两其实是一样的
+
+    //第二件事情 如果是第一个namenode返回了一个NameSpaceInfo之后
+    //一定会在datanode这里初始化DataStorage  里面会初始化对应的block存储空间
+    //启动一些block相关的后台线程
+
+    //第三件事情
     bpos.verifyAndSetNamespaceInfo(this, nsInfo);
 
     /* set thread name again to include NamespaceInfo when it's available. */
@@ -517,6 +540,7 @@ class BPServiceActor implements Runnable {
   HeartbeatResponse sendHeartBeat(boolean requestBlockReportLease)
       throws IOException {
     scheduler.scheduleNextHeartbeat();
+    // 发送心跳的时候，一块就是带上自己当前的存储的信息
     StorageReport[] reports =
         dn.getFSDataset().getStorageReports(bpos.getBlockPoolId());
     if (LOG.isDebugEnabled()) {
@@ -540,9 +564,12 @@ class BPServiceActor implements Runnable {
             SlowDiskReports.create(dn.getDiskMetrics().getDiskOutliersStats()) :
             SlowDiskReports.EMPTY_REPORT;
 
+    // 向namenode去发送senHeartbeat请求
     HeartbeatResponse response = bpNamenode.sendHeartbeat(bpRegistration,
         reports,
+        // 缓存可以用的容量
         dn.getFSDataset().getCacheCapacity(),
+        // 已经使用的缓存的空间
         dn.getFSDataset().getCacheUsed(),
         dn.getXmitsInProgress(),
         dn.getActiveTransferThreadCount(),
@@ -567,6 +594,13 @@ class BPServiceActor implements Runnable {
 
   //This must be called only by BPOfferService
   void start() {
+    /**
+     * 之前在BlockPoolManager初始化的时候，startAll()方法已经被调用过了
+     * 在这里DataNode在startDatanodeDaemon()方法再次调用了BlockPoolManager.startAll()方法
+     * 属于是重复调用
+     * 也不会有什么问题，在这里他会判断一下，如果这个BPServiceActor线程已经启动过了
+     * 此时会直接返回，不会重复启动一个线程
+     */
     if ((bpThread != null) && (bpThread.isAlive())) {
       //Thread is started already
       return;
@@ -653,6 +687,8 @@ class BPServiceActor implements Runnable {
     //
     // Now loop for a long time....
     //
+    // BlockPoolOfferService,BlockPoolServiceActor
+    // 这两个线程其实都是BlockPool，块管理相关的东西，还负责了跟namenode之间的通信
     while (shouldRun()) {
       try {
         DataNodeFaultInjector.get().startOfferService();
@@ -746,6 +782,7 @@ class BPServiceActor implements Runnable {
           commandProcessingThread.enqueue(cmd);
         }
 
+        // 核心代码
         if (sendHeartbeat) {
           dn.getMetrics().addHeartbeatTotal(
               scheduler.monotonicNow() - startTime, getRpcMetricSuffix());
@@ -800,6 +837,10 @@ class BPServiceActor implements Runnable {
   void register(NamespaceInfo nsInfo) throws IOException {
     // The handshake() phase loaded the block pool storage
     // off disk - so update the bpRegistration object from that info
+    // 调用了BPOfferService.createRegistration()方法
+    // 创建了一个DatanodeRegistration对象，大体上来说相当于一个datanode注册请求
+    // 这里面包含了DataNode
+    // 这样的话，如果namenode收到这个注册请求，bpRegistration就可以识别出来是哪个datanode进行注册
     DatanodeRegistration newBpRegistration = bpos.createRegistration();
 
     LOG.info(this + " beginning handshake with NN");
@@ -807,6 +848,7 @@ class BPServiceActor implements Runnable {
     while (shouldRun()) {
       try {
         // Use returned registration from namenode with updated fields
+        // 拿回来的bpRegistration对象里面肯定是包含了一些namenode注册成功以后给datanode返回的一些东西
         newBpRegistration = bpNamenode.registerDatanode(newBpRegistration);
         newBpRegistration.setNamespaceInfo(nsInfo);
         bpRegistration = newBpRegistration;
@@ -838,6 +880,10 @@ class BPServiceActor implements Runnable {
     fullBlockReportLeaseId = 0;
 
     // random short delay - helps scatter the BR from all DNs
+    //延迟调度一次block report，他其实在这里就会执行一次block report,去汇报一次当前datanlde节点上
+    //全量的block有哪些
+    //这边会做一些时间的设定，然后在后面，就会在BPServiceActor.run()方法，线程的主流程里面
+    //会开始进行block report，第一次是全量汇报自己的block
     scheduler.scheduleBlockReport(dnConf.initialBlockReportDelayMs, true);
   }
 
@@ -903,6 +949,7 @@ class BPServiceActor implements Runnable {
         try {
           // 每隔几秒钟发送心跳，也是在这里
           // 每隔一段时间，汇报自己的block report，也是在这里
+          // 这里面包含了执行命令的指令
           offerService();
         } catch (Exception ex) {
           LOG.error("Exception in BPOfferService for " + this, ex);

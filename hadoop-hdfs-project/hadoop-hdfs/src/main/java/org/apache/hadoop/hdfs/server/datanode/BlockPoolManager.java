@@ -121,11 +121,14 @@ class BlockPoolManager {
   
   synchronized void startAll() throws IOException {
     try {
+      //这里是极为关键的逻辑
+      //datanode启动的时候，要向namenode去进行注册，让namenode感知到自己
       UserGroupInformation.getLoginUser().doAs(
           new PrivilegedExceptionAction<Object>() {
             @Override
             public Object run() throws Exception {
               for (BPOfferService bpos : offerServices) {
+                //在启动BPServcieActor线程
                 bpos.start();
               }
               return null;
@@ -209,7 +212,15 @@ class BlockPoolManager {
       if (!toAdd.isEmpty()) {
         LOG.info("Starting BPOfferServices for nameservices: " +
             Joiner.on(",").useForNull("<default>").join(toAdd));
-      
+
+        // 在这里就是这个BPOfferService，BPOfferActor
+        // nameservice，就是一组namenode，两个namenode组成的，就是一个active + 一个standby
+        // 一组namenode，就是一个nameservice。
+        // 所以说初始化BlockPoolManager的时候，他其实会根据你的配置文件中的nameservice的配置
+        // 对每个nameservice（一组namenode）,会创建一个BPOfferService
+
+        // 如果你仅仅用的是hadoop的普通HA架构，就只有一个nameservice
+        // 也就只有一个BPOfferService
         for (String nsToAdd : toAdd) {
           Map<String, InetSocketAddress> nnIdToAddr = addrMap.get(nsToAdd);
           Map<String, InetSocketAddress> nnIdToLifelineAddr =
@@ -226,12 +237,14 @@ class BlockPoolManager {
             lifelineAddrs.add(nnIdToLifelineAddr != null ?
                 nnIdToLifelineAddr.get(nnId) : null);
           }
+          // 创建BPOfferService 核心代码
           BPOfferService bpos = createBPOS(nsToAdd, nnIds, addrs,
               lifelineAddrs);
           bpByNameserviceId.put(nsToAdd, bpos);
           offerServices.add(bpos);
         }
       }
+      // startAll()就会去启动对应的BPServiceActor那些线程
       startAll();
     }
 
@@ -241,7 +254,8 @@ class BlockPoolManager {
     if (!toRemove.isEmpty()) {
       LOG.info("Stopping BPOfferServices for nameservices: " +
           Joiner.on(",").useForNull("<default>").join(toRemove));
-      
+
+      //如果有一些nameservice要删除掉，那么就要停止他对应的BPServiceActor线程
       for (String nsToRemove : toRemove) {
         BPOfferService bpos = bpByNameserviceId.get(nsToRemove);
         bpos.stop();
@@ -252,6 +266,8 @@ class BlockPoolManager {
     
     // Step 5. Update nameservices whose NN list has changed
     if (!toRefresh.isEmpty()) {
+      // 如果某个nameservice他的namenode列表变化了，也是在这里来处理
+      // 肯定的初始化新的BPServiceActor线程去跟新的namenode进行通信
       LOG.info("Refreshing list of NNs for nameservices: " +
           Joiner.on(",").useForNull("<default>").join(toRefresh));
       

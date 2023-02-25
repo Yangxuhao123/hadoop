@@ -135,6 +135,9 @@ class BPOfferService {
     this.dn = dn;
 
     for (int i = 0; i < nnAddrs.size(); ++i) {
+      // 如果你的datanode要反过来向namenode发送一些请求的话
+      // 比如说：注册、心跳、汇报Block，以及其他的一些东西，都是在bpServiceActor里面去发送的
+      // 一个BPServcieActor就是一个线程
       this.bpServices.add(new BPServiceActor(nameserviceId, nnIds.get(i),
           nnAddrs.get(i), lifelineNnAddrs.get(i), this));
     }
@@ -388,6 +391,8 @@ class BPOfferService {
     }
 
     try {
+      // 判断一下，如果bpNsInfo是null的话，代表的就是第一个namenode返回了一个NameSpaceInfo
+      // 在这里就会初始化DataStorage，开辟对应的存储空间
       DataNodeFaultInjector.get().delayWhenOfferServiceHoldLock();
       if (setNamespaceInfo(nsInfo) == null) {
         boolean success = false;

@@ -891,6 +891,9 @@ public class DatanodeManager {
 
   /** Add a datanode. */
   void addDatanode(final DatanodeDescriptor node) {
+    // 这才是最核心的注册datanode的一段逻辑
+    // 注册一个datanode的逻辑很简单，无非是封装了一个代表了datanode的DatanodeDescriptor对象
+    // 然后将这个东西放入了几个map中
     // To keep host2DatanodeMap consistent with datanodeMap,
     // remove  from host2DatanodeMap the datanodeDescriptor removed
     // from datanodeMap before adding node to host2DatanodeMap.
@@ -1129,6 +1132,9 @@ public class DatanodeManager {
    * Register the given datanode with the namenode. NB: the given
    * registration is mutated and given back to the datanode.
    *
+   * 将datanode注册到namenode上去，同时DatanodeRegistration对象是可变的（mutated）
+   * 变化过后的DatanodeRegistration对象会返还给那个datanode
+   *
    * @param nodeReg the datanode registration
    * @throws DisallowedDatanodeException if the registration request is
    *    denied because the datanode does not match includes/excludes
@@ -1166,7 +1172,9 @@ public class DatanodeManager {
         
       NameNode.stateChangeLog.info("BLOCK* registerDatanode: from "
           + nodeReg + " storage " + nodeReg.getDatanodeUuid());
-  
+
+      // 从两个map里面都获取了一个DatanodeDescriptor的对象
+      // 正常情况下，如果是第一次刚刚来注册的datanode，这里获取到的nodeS和nodeN，肯定都是null
       DatanodeDescriptor nodeS = getDatanode(nodeReg.getDatanodeUuid());
       DatanodeDescriptor nodeN = host2DatanodeMap.getDatanodeByXferAddr(
           nodeReg.getIpAddr(), nodeReg.getXferPort());
@@ -1245,6 +1253,9 @@ public class DatanodeManager {
         return;
       }
 
+      // 正常来说，第一次注册datanode，源码应该是走到这里来的
+      // 为这个注册过来的datanode，封装和创建一个DatanodeDescriptor对象
+      // 这个东西其实就是在namenode这一边代表了一个datanode
       DatanodeDescriptor nodeDescr 
         = new DatanodeDescriptor(nodeReg, NetworkTopology.DEFAULT_RACK);
       boolean success = false;
@@ -1259,15 +1270,21 @@ public class DatanodeManager {
           nodeDescr.setDependentHostNames(
               getNetworkDependenciesWithDefault(nodeDescr));
         }
+        // 将这个datanode放入了集群拓扑的对象里面
         nodeDescr.setSoftwareVersion(nodeReg.getSoftwareVersion());
         resolveUpgradeDomain(nodeDescr);
 
         // register new datanode
+        // 注册一个新的datanode
         addDatanode(nodeDescr);
         blockManager.getBlockReportLeaseManager().register(nodeDescr);
         // also treat the registration message as a heartbeat
         // no need to update its timestamp
         // because its is done when the descriptor is created
+        // 是用来管理datanode后续发送的心跳的
+        // 这个东西是用来监控，如果你在一定时间范围内没有发送心跳过来，就认为datanode死掉了
+        // 就会将这个datanode摘除
+        // 注册datanode之后，如果注册成功了，此时就会将这个datanode加入heartbeatManager的管辖范围
         heartbeatManager.addDatanode(nodeDescr);
         heartbeatManager.updateDnStat(nodeDescr);
         incrementVersionCount(nodeReg.getSoftwareVersion());
@@ -1784,8 +1801,8 @@ public class DatanodeManager {
     if (nodeinfo == null || !nodeinfo.isRegistered()) {
       return new DatanodeCommand[]{RegisterCommand.REGISTER};
     }
-    //HeartbeatManager底层就是调用了那个DataNodeDescriptor的处理心跳的方法
-    //DataNodeDescriptor无非就是再更新一些磁盘使用空间的数据，更新了一下最近一次进行心跳的时间
+    // HeartbeatManager底层就是调用了那个DataNodeDescriptor的处理心跳的方法
+    // DataNodeDescriptor无非就是再更新一些磁盘使用空间的数据，更新了一下最近一次进行心跳的时间
     heartbeatManager.updateHeartbeat(nodeinfo, reports, cacheCapacity,
         cacheUsed, xceiverCount, failedVolumes, volumeFailureSummary);
 

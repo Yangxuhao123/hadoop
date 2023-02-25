@@ -504,6 +504,8 @@ public class DataNode extends ReconfigurableBase
     try {
       hostName = getHostName(conf);
       LOG.info("Configured hostname is {}", hostName);
+      //实例化datanode的一个入口
+      //初始化了datanode所有的关键性的组件
       startDataNode(dataDirs, resources);
     } catch (IOException ie) {
       shutdown();
@@ -1156,6 +1158,10 @@ public class DataNode extends ReconfigurableBase
     streamingAddr = tcpPeerServer.getStreamingAddr();
     LOG.info("Opened streaming server at {}", streamingAddr);
     this.threadGroup = new ThreadGroup("dataXceiverServer");
+    //实例化了一个DataXceiverServer
+    //这个是datanode上面专门在后面负责为client和datanode接收读写block的请求的
+    //Xceiver 数据流的意思
+    //这个server是以数据流的形式，为client读写block提供数据流的上传，数据流的下载
     xserver = new DataXceiverServer(tcpPeerServer, getConf(), this);
     this.dataXceiverServer = new Daemon(threadGroup, xserver);
     this.threadGroup.setDaemon(true); // auto destroy when empty
@@ -1404,11 +1410,14 @@ public class DataNode extends ReconfigurableBase
           + "to the number of configured volumes (" + volsConfigured + ").");
     }
 
+    //DataStorge负责管理DataNode上的block数据的
     storage = new DataStorage();
     
     // global DN settings
     registerMXBean();
+    //初始化了一个DataXceiverServer组件，后续为client提供数据流方式的block读写
     initDataXceiver();
+    //启动info server，是一个http sever，本质上和namenode上面的那个http server是一样的
     startInfoServer();
     pauseMonitor = new JvmPauseMonitor();
     pauseMonitor.init(getConf());
@@ -1421,6 +1430,7 @@ public class DataNode extends ReconfigurableBase
     dnUserName = UserGroupInformation.getCurrentUser().getUserName();
     LOG.info("dnUserName = {}", dnUserName);
     LOG.info("supergroup = {}", supergroup);
+    //初始化rcp server
     initIpcServer();
 
     metrics = DataNodeMetrics.create(getConf(), getDisplayName());
@@ -1431,6 +1441,8 @@ public class DataNode extends ReconfigurableBase
     ecWorker = new ErasureCodingWorker(getConf(), this);
     blockRecoveryWorker = new BlockRecoveryWorker(this);
 
+    //BlockPoolManager,是负责管理block，blockPool的概念
+    //BlockPoolManager在初始化的时候，通过refreshNamenodes()方法做了一些初始化的事情
     blockPoolManager = new BlockPoolManager(this);
     blockPoolManager.refreshNamenodes(getConf());
 
@@ -1651,10 +1663,16 @@ public class DataNode extends ReconfigurableBase
    * One of the Block Pools has successfully connected to its NN.
    * This initializes the local storage for that block pool,
    * checks consistency of the NN's cluster ID, etc.
-   * 
+   *
+   * 当前已经判断好，一个block pool(BPOfferService)，已经跟namenode建立了连接，versionRequest()成功了
+   * 现在就要来初始化datanode上的那个block pool对应的local storage，本地存储
+   * 然后的话，还会做一些其他的事情，比如说检查namenode cluster ID的一致性
+   *
    * If this is the first block pool to register, this also initializes
    * the datanode-scoped storage.
-   * 
+   *
+   * 如果这是第一个初始化的block pool，同时也会初始化一个datanode范围的全局的存储
+   *
    * @param bpos Block pool offer service
    * @throws IOException if the NN is inconsistent with the local storage.
    */
@@ -1668,20 +1686,28 @@ public class DataNode extends ReconfigurableBase
     setClusterId(nsInfo.clusterID, nsInfo.getBlockPoolID());
 
     // Register the new block pool with the BP manager.
+    // blockPoolManager中注册了一个新的BlockPool
     blockPoolManager.addBlockPool(bpos);
     
     // In the case that this is the first block pool to connect, initialize
     // the dataset, block scanners, etc.
+    // 初始化storage存储，如果是第一次初始化block pool的话
+    // 还需要同时初始化dataset，block scanner 等等其他的一些核心组件
     initStorage(nsInfo);
 
     try {
+      //为了一个新的block pool，在FsDataset里面，把一些东西封装成一些对象，放到一些map里去
+      //或者是在一些map里初始化出来一些空的对象
+      //一句话概括：FsDataset往这个里面加入了一个BlockPool就可以了
       data.addBlockPool(nsInfo.getBlockPoolID(), getConf());
     } catch (AddBlockPoolException e) {
       handleAddBlockPoolError(e);
     }
     // HDFS-14993: check disk after add the block pool info.
+    //检查读写有error的磁盘，排除掉这些磁盘的读写，避免有datanode有一些启动的失败
     checkDiskError();
 
+    //初始化定时运行的Scanners，看起来像是启动了一堆后台定时的线程
     blockScanner.enableBlockPoolId(bpos.getBlockPoolId());
     initDirectoryScanner(getConf());
     initDiskBalancer(data, getConf());
@@ -2686,10 +2712,12 @@ public class DataNode extends ReconfigurableBase
     blockPoolManager.startAll();
 
     // start dataXceiveServer
+    //启动了dataXceiveServer，监听一个端口号，后面可以提供block数据流的读写
     dataXceiverServer.start();
     if (localDataXceiverServer != null) {
       localDataXceiverServer.start();
     }
+    //启动了一个rpc Server，监听一个端口号，后续可以接收别人的rpc请求的调用
     ipcServer.setTracer(tracer);
     ipcServer.start();
     startTime = now();
@@ -2783,8 +2811,11 @@ public class DataNode extends ReconfigurableBase
   @InterfaceAudience.Private
   public static DataNode createDataNode(String args[], Configuration conf,
       SecureResources resources) throws IOException {
+    // 第一块 实例化一个DataNode实例 同时会进行一些组件的初始化
     DataNode dn = instantiateDataNode(args, conf, resources);
     if (dn != null) {
+      // 第二块其实就是启动datanode()他的一些server，http server，rpc server，stream server
+      // 同时启动一些后台线程
       dn.runDatanodeDaemon();
     }
     return dn;
@@ -2927,8 +2958,10 @@ public class DataNode extends ReconfigurableBase
     int errorCode = 0;
     try {
       StringUtils.startupShutdownMessage(DataNode.class, args, LOG);
+      // 创建datanode实例
       DataNode datanode = createDataNode(args, null, resources);
       if (datanode != null) {
+        // 调用datanode.join()方法，让datanode无限循环，等待别人来调用他的接口
         datanode.join();
       } else {
         errorCode = 1;
